@@ -44,6 +44,27 @@ def on_enable() -> int:
     return 0
 
 
+def on_disable():
+    """
+    插件被禁用时调用（无参数）
+    """
+    return 0
+
+
+def on_uninstall():
+    """
+    插件被卸载时调用（无参数）
+    """
+    return 0
+
+
+def on_setting():
+    """
+    用户点击"插件设置"时调用（无参数）
+    """
+    return 0
+
+
 def on_group_message(ev: dict) -> int:
     """
     收到群消息时调用
@@ -73,23 +94,3 @@ def on_event_message(ev: dict) -> int:
     """
     return 0
 
-
-def on_setting():
-    """
-    用户点击"插件设置"时调用（无参数）
-    """
-    pass
-
-
-def on_disable():
-    """
-    插件被禁用时调用（无参数）
-    """
-    pass
-
-
-def on_uninstall():
-    """
-    插件被卸载时调用（无参数）
-    """
-    pass

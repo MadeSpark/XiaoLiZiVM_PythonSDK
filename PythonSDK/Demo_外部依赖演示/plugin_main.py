@@ -79,9 +79,10 @@ def _generate_test_image() -> bytes:
         return None
 
 
-def on_enable(ev: dict) -> int:
+def on_enable() -> int:
     """
-    插件被启用时调用
+    插件被启用时调用（无参数）
+    返回值: 0=正常，1=拒绝启用（框架将停止加载该插件）
     """
     if api is None:
         return 0
@@ -149,22 +150,22 @@ def on_event_message(ev: dict) -> int:
     return 0
 
 
-def on_setting(ev: dict):
+def on_setting():
     """
-    用户点击"插件设置"时调用
-    """
-    pass
-
-
-def on_disable(ev: dict):
-    """
-    插件被禁用时调用
+    用户点击"插件设置"时调用（无参数）
     """
     pass
 
 
-def on_uninstall(ev: dict):
+def on_disable():
     """
-    插件被卸载时调用
+    插件被禁用时调用（无参数）
     """
-    pass
+    return 0
+
+
+def on_uninstall():
+    """
+    插件被卸载时调用（无参数）
+    """
+    return 0
