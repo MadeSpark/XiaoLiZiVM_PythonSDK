@@ -21,7 +21,7 @@
 #include <cstdio>
 #include <mutex>
 
-static bool g_debugEnabled = true; // 调试开关：默认关闭；需要时手动改为 true
+static bool g_debugEnabled = false; // 调试开关：默认关闭；需要时手动改为 true
 static bool g_debugLogCleared = false;
 
 static void DebugLog(const std::string& msg)
