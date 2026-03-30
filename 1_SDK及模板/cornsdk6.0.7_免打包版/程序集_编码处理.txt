@@ -1,0 +1,813 @@
+.版本 2
+.支持库 iconv
+.支持库 spec
+
+.程序集 程序集_编码处理
+
+.子程序 BinToWord, 整数型, ,  字节集到无符号短整数  unsigned short
+.参数 bin, 字节集
+.局部变量 w, 短整数型
+.局部变量 u, 整数型
+.局部变量 tmp, 字节集
+
+tmp ＝ bin
+字节集_倒序 (tmp)
+w ＝ 取字节集数据 (tmp, #短整数型, 1)
+.判断开始 (w ＜ 0)
+    u ＝ w ＋ 65536
+.默认
+    u ＝ w
+.判断结束
+返回 (u)
+
+
+
+.子程序 UnicodeToUtf8, 字节集
+.参数 unicode, 字节集
+.局部变量 handle, 整数型
+.局部变量 bool, 逻辑型
+.局部变量 bin, 字节集
+
+handle ＝ 编码转换_打开 (“UTF-16BE”, “UTF-8”)
+bin ＝ 编码转换_转换 (handle, unicode, bool)
+编码转换_关闭 (handle)
+返回 (bin)
+
+
+.子程序 isHexString, 逻辑型
+.参数 utf16, 字节集
+.局部变量 c, 整数型
+.局部变量 i, 整数型
+.局部变量 t, 字节集
+
+t ＝ 到字节集 (UnicodeToAnsi (utf16))
+c ＝ 取字节集长度 (t)
+.计次循环首 (c, i)
+
+    .判断开始 (t [i] ＞ 47 且 t [i] ＜ 58)  ' 0-9  48-57
+
+    .默认
+
+        .判断开始 (t [i] ＞ 96 且 t [i] ＜ 103)  ' a-f 97-102
+
+        .默认
+
+            .判断开始 (t [i] ＞ 64 且 t [i] ＜ 71)  ' A-F 65-70
+
+            .默认
+                返回 (假)
+            .判断结束
+
+        .判断结束
+
+    .判断结束
+
+.计次循环尾 ()
+返回 (真)
+
+.子程序 交换变量_asm
+.参数 变量1, 通用型, 参考, 欲将其内容交换到变量2的变量1。
+.参数 变量2, 通用型, 参考, 欲将其内容交换到变量1的变量2。
+
+置入代码 ({ 81, 82, 139, 69, 8, 139, 77, 12, 139, 16, 135, 17, 137, 16, 90, 89, 93, 194, 8, 0 })
+
+.子程序 asm_bswap_int_ptr, 整数型
+.参数 ptr, 整数型
+
+置入代码 ({ 81, 139, 77, 8, 139, 1, 15, 200, 137, 1, 49, 192, 89, 93, 194, 4, 0 })
+' 置入代码 ({ 139, 93, 8, 139, 11, 15, 201, 137, 11, 201, 194, 4, 0 })
+返回 (0)
+
+.子程序 字节集_倒序, , , reverse
+.参数 data, 字节集
+.局部变量 dataLen, 整数型
+.局部变量 mul, 整数型
+.局部变量 rmd, 整数型
+.局部变量 dataPtr, 整数型
+.局部变量 i, 整数型
+.局部变量 a1, 整数型
+.局部变量 a2, 整数型
+.局部变量 tempByte, 字节型
+.局部变量 root, 整数型
+
+
+dataLen ＝ 取字节集长度 (data)
+mul ＝ 取整 (dataLen ＼ 2) ＼ 4
+rmd ＝ dataLen － mul × 8
+.如果真 (mul ＞ 0)
+    dataPtr ＝ 取变量数据地址 (data) － 1
+    .计次循环首 (mul, i)
+        a1 ＝ 4 × (i － 1)
+        a2 ＝ dataLen － a1 － 3
+        a1 ＝ 1 ＋ a1
+        交换变量_asm (data [a1], data [a2])
+        asm_bswap_int_ptr (dataPtr ＋ a1)
+        asm_bswap_int_ptr (dataPtr ＋ a2)
+    .计次循环尾 ()
+.如果真结束
+
+root ＝ mul × 4
+.计次循环首 (rmd ＼ 2, i)
+    a1 ＝ root ＋ i
+    a2 ＝ dataLen － a1 ＋ 1
+    tempByte ＝ data [a1]
+    data [a1] ＝ data [a2]
+    data [a2] ＝ tempByte
+.计次循环尾 ()
+
+.子程序 UnicodeToAnsi, 文本型
+.参数 unicode, 字节集
+.局部变量 handle, 整数型
+.局部变量 bool, 逻辑型
+.局部变量 bin, 字节集
+.局部变量 str, 文本型
+
+handle ＝ 编码转换_打开 (“UTF-16BE”, “GB18030//IGNORE”)
+bin ＝ 编码转换_转换 (handle, unicode, bool)
+.如果真 (bool)
+    str ＝ 到文本 (bin)
+.如果真结束
+编码转换_关闭 (handle)
+返回 (str)
+
+.子程序 Utf8ToUnicode, 字节集
+.参数 utf8, 字节集
+.局部变量 handle, 整数型
+.局部变量 bool, 逻辑型
+.局部变量 bin, 字节集
+
+handle ＝ 编码转换_打开 (“UTF-8”, “UTF-16BE”)
+bin ＝ 编码转换_转换 (handle, utf8, bool)
+编码转换_关闭 (handle)
+返回 (bin)
+
+
+.子程序 Bin2Hex, 文本型
+.参数 Bin, 字节集
+.局部变量 Length, 整数型
+.局部变量 Index, 整数型
+.局部变量 Result, 字节集
+
+Length ＝ 取字节集长度 (Bin)
+.如果真 (Length ＝ 0)
+    返回 (“”)
+.如果真结束
+
+Result ＝ 取空白字节集 (Length × 3 － 1)
+.变量循环首 (1, Length － 1, 1, Index)
+    .如果 (Bin [Index] ＜ 160)
+        Result [Index × 3 － 2] ＝ 位或 (右移 (Bin [Index], 4), 48)
+    .否则
+        Result [Index × 3 － 2] ＝ 位或 (右移 (Bin [Index], 4) － 9, 64)
+    .如果结束
+    .如果 (位与 (Bin [Index], 15) ＜ 10)
+        Result [Index × 3 － 1] ＝ 位或 (位与 (Bin [Index], 15), 48)
+    .否则
+        Result [Index × 3 － 1] ＝ 位或 (位与 (Bin [Index], 15) － 9, 64)
+    .如果结束
+    Result [Index × 3] ＝ 32
+.变量循环尾 ()
+.如果 (Bin [Index] ＜ 160)
+    Result [Index × 3 － 2] ＝ 位或 (右移 (Bin [Index], 4), 48)
+.否则
+    Result [Index × 3 － 2] ＝ 位或 (右移 (Bin [Index], 4) － 9, 64)
+.如果结束
+.如果 (位与 (Bin [Index], 15) ＜ 10)
+    Result [Index × 3 － 1] ＝ 位或 (位与 (Bin [Index], 15), 48)
+.否则
+    Result [Index × 3 － 1] ＝ 位或 (位与 (Bin [Index], 15) － 9, 64)
+.如果结束
+返回 (到文本 (Result))
+
+.子程序 _Bin2Hex, 文本型
+.参数 Bin, 字节集
+.局部变量 Length, 整数型
+.局部变量 Index, 整数型
+.局部变量 Result, 字节集
+
+Length ＝ 取字节集长度 (Bin)
+.如果真 (Length ＝ 0)
+    返回 (“”)
+.如果真结束
+Result ＝ 取空白字节集 (Length × 2)
+.变量循环首 (1, Length, 1, Index)
+    .如果 (Bin [Index] ＜ 160)
+        Result [Index × 2 － 1] ＝ 位或 (右移 (Bin [Index], 4), 48)
+    .否则
+        Result [Index × 2 － 1] ＝ 位或 (右移 (Bin [Index], 4) － 9, 64)
+    .如果结束
+    .如果 (位与 (Bin [Index], 15) ＜ 10)
+        Result [Index × 2] ＝ 位或 (位与 (Bin [Index], 15), 48)
+    .否则
+        Result [Index × 2] ＝ 位或 (位与 (Bin [Index], 15) － 9, 64)
+    .如果结束
+
+.变量循环尾 ()
+返回 (到文本 (Result))
+
+.子程序 Hex2Bin, 字节集
+.参数 原文, 文本型
+
+.判断开始 (原文 ＝ “”)
+    返回 ({  })
+.默认
+    返回 (十六进制文本到字节集 (子文本替换 (删全部空 (原文), #换行符, “”, , , 真)))
+.判断结束
+
+
+.子程序 十六进制文本到字节集, 字节集, , 嵌ASM
+.参数 原文, 文本型
+.局部变量 原文长度, 整数型
+.局部变量 原文地址, 整数型
+.局部变量 码表地址, 整数型
+.局部变量 结果地址, 整数型
+.局部变量 结果, 字节集
+
+原文长度 ＝ 0  ' ebp-4
+原文地址 ＝ 1  ' ebp-8
+码表地址 ＝ 2  ' ebp-c
+结果地址 ＝ 3  ' ebp-10
+置入代码 ({ 139, 93, 8, 139, 27, 137, 93, 248, 139, 251, 185, 255, 255, 255, 255, 50, 192, 252, 242, 174, 184, 254, 255, 255, 255, 43, 193, 137, 69, 252 })
+.如果真 (原文长度 ＜ 1)
+    返回 ({  })
+.如果真结束
+置入代码 ({ 232, 0, 0, 0, 0, 89, 131, 193, 6, 235, 103 })  ' 跳转到代码
+' ==========码表开始
+置入代码 ({ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0, 0, 0, 0, 0, 10, 11, 12, 13, 14, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 11, 12, 13, 14, 15 })
+' 跳到这里了
+置入代码 ({ 144, 144, 144, 144, 144, 137, 77, 244 })  ' 码表地址到ebp-c
+置入代码 ({ 209, 109, 252 })  ' 原文长度/2
+结果 ＝ 取空白字节集 (原文长度)
+置入代码 ({ 131, 192, 8, 137, 69, 240 })  ' 结果地址
+' 计算开始
+置入代码 ({ 139, 93, 244, 139, 117, 248, 139, 125, 240, 209, 101, 252, 139, 77, 252, 3, 206, 51, 192, 102, 139, 6, 70, 70, 80, 37, 255, 0, 0, 0, 138, 52, 24, 88, 193, 232, 8, 138, 20, 24, 192, 230, 4, 8, 242, 136, 23, 71, 59, 241, 124, 223 })
+返回 (结果)
+
+.子程序 AnsiToUnicode, 字节集
+.参数 ansi, 文本型
+.局部变量 handle, 整数型
+.局部变量 bool, 逻辑型
+.局部变量 bin, 字节集
+.局部变量 str, 文本型
+
+handle ＝ 编码转换_打开 (“GB18030”, “UTF-16BE//IGNORE”)
+bin ＝ 编码转换_转换 (handle, 到字节集 (ansi), bool)
+编码转换_关闭 (handle)
+返回 (bin)
+
+.子程序 Utf8ToUsc2_All, 文本型, 公开
+.参数 utf8, 字节集
+.局部变量 utf16, 字节集
+.局部变量 uPtr, 整数型
+.局部变量 pos, 整数型
+.局部变量 c, 整数型
+.局部变量 i, 整数型
+.局部变量 code, 字节集
+.局部变量 tmp, 文本型
+.局部变量 result, 文本型
+.局部变量 ptr, 整数型
+.局部变量 plane, 整数型
+
+utf16 ＝ Utf8ToUnicode (utf8)
+.如果真 (utf16 ＝ {  })
+    返回 (“”)
+.如果真结束
+uPtr ＝ 取变量数据地址_字节集 (utf16)
+c ＝ 取字节集长度 (utf16) ÷ 2
+result ＝ 取空白文本 (取字节集长度 (utf16) × 3)
+' 为什么是长度是原始的三倍呢?
+' 因为最糟糕的情况就是两个字节变成[\uxxxx]6个字节
+ptr ＝ 取变量数据地址_文本 (result)
+pos ＝ 0
+i ＝ 1
+.判断循环首 (i ≤ c)
+    code ＝ 指针到字节集 (uPtr ＋ (i － 1) × 2, 2)
+    plane ＝ BinToWord (code)
+    .判断开始 (plane ≥ 55296 且 plane ≤ 57343)  ' D800-DFFF 区间是两个码元 也就是4字节
+        写到内存 ({ 92, 117 }, ptr ＋ pos, )
+        pos ＝ pos ＋ 2
+        tmp ＝ _Bin2Hex (code)
+        写到内存 (tmp, ptr ＋ pos, )
+        pos ＝ pos ＋ 取文本长度 (tmp)
+        i ＝ i ＋ 1  ' 多2字节
+        .如果真 (i ＞ c)  ' 没有第二部分
+            跳出循环 ()
+        .如果真结束
+        code ＝ 指针到字节集 (uPtr ＋ (i － 1) × 2, 2)
+        写到内存 ({ 92, 117 }, ptr ＋ pos, )
+        pos ＝ pos ＋ 2
+        tmp ＝ _Bin2Hex (code)
+        写到内存 (tmp, ptr ＋ pos, )
+        pos ＝ pos ＋ 取文本长度 (tmp)
+    .判断 (plane ＞ 0 且 plane ≤ 55295)  ' 单码元范围: 0000 - D7FF | E000 - FFFF
+        tmp ＝ _Bin2Hex (code)
+        写到内存 ({ 92, 117 }, ptr ＋ pos, )
+        pos ＝ pos ＋ 2
+        写到内存 (tmp, ptr ＋ pos, )
+        pos ＝ pos ＋ 取文本长度 (tmp)
+    .判断 (plane ≥ 57344 且 plane ≤ 65535)  ' 单码元范围: 0000 - D7FF | E000 - FFFF
+        tmp ＝ _Bin2Hex (code)
+        写到内存 ({ 92, 117 }, ptr ＋ pos, )
+        pos ＝ pos ＋ 2
+        写到内存 (tmp, ptr ＋ pos, )
+        pos ＝ pos ＋ 取文本长度 (tmp)
+
+
+    .默认
+        ' 未知平面 太大了 一般遇不到的
+        跳出循环 ()
+    .判断结束
+    i ＝ i ＋ 1
+.判断循环尾 ()
+写到内存 ({ 0 }, ptr ＋ pos, )
+返回 (result)
+
+.子程序 Utf8ToUsc2, 文本型, 公开, 可将utf8转换成混杂有usc2的ansi文字，韩文等不支持显示的字符将被转换为usc2
+.参数 utf8, 字节集
+.参数 转义, 逻辑型, 可空
+.局部变量 utf16, 字节集
+.局部变量 uPtr, 整数型
+.局部变量 pos, 整数型
+.局部变量 c, 整数型
+.局部变量 i, 整数型
+.局部变量 code, 字节集
+.局部变量 tmp, 文本型
+.局部变量 result, 文本型
+.局部变量 ptr, 整数型
+.局部变量 plane, 整数型
+
+utf16 ＝ Utf8ToUnicode (utf8)
+.如果真 (utf16 ＝ {  })
+    返回 (“”)
+.如果真结束
+uPtr ＝ 取变量数据地址 (utf16)
+c ＝ 取字节集长度 (utf16) ÷ 2
+result ＝ 取空白文本 (取字节集长度 (utf16) × 3)
+ptr ＝ 取变量数据地址_文本 (result)
+pos ＝ 0
+i ＝ 1
+.判断循环首 (i ≤ c)
+    code ＝ 指针到字节集 (uPtr ＋ (i － 1) × 2, 2)
+    plane ＝ BinToWord (code)
+    .判断开始 (plane ≥ 55296 且 plane ≤ 57343)  ' D800-DFFF 区间是两个码元 也就是4字节
+        写到内存 ({ 92, 117 }, ptr ＋ pos, )
+        pos ＝ pos ＋ 2
+        tmp ＝ _Bin2Hex (code)
+        写到内存 (tmp, ptr ＋ pos, )
+        pos ＝ pos ＋ 取文本长度 (tmp)
+        i ＝ i ＋ 1  ' 多2字节
+        .如果真 (i ＞ c)  ' 没有第二部分
+            跳出循环 ()
+        .如果真结束
+        code ＝ 指针到字节集 (uPtr ＋ (i － 1) × 2, 2)
+        写到内存 ({ 92, 117 }, ptr ＋ pos, )
+        pos ＝ pos ＋ 2
+        tmp ＝ _Bin2Hex (code)
+        写到内存 (tmp, ptr ＋ pos, )
+        pos ＝ pos ＋ 取文本长度 (tmp)
+    .判断 (plane ＞ 0 且 plane ≤ 55295)  ' 单码元范围: 0000 - D7FF | E000 - FFFF
+        .判断开始 (code ＝ { 0, 1 })
+            写到内存 (“ ”, ptr ＋ pos, )
+            pos ＝ pos ＋ 1
+        .默认
+            tmp ＝ UnicodeToAnsi (code)
+            .如果 (tmp ＝ “??” 或 tmp ＝ “” 或 取文本长度 (tmp) ＞ 2)
+                tmp ＝ _Bin2Hex (code)
+                写到内存 ({ 92, 117 }, ptr ＋ pos, )
+                pos ＝ pos ＋ 2
+                写到内存 (tmp, ptr ＋ pos, )
+                pos ＝ pos ＋ 取文本长度 (tmp)
+            .否则
+
+                .如果真 (转义)
+                    .判断开始 (tmp ＝ “\”)
+                        tmp ＝ “\u005c”
+                    .判断 (tmp ＝ “[”)
+                        tmp ＝ “\u005b”
+                    .判断 (tmp ＝ “]”)
+                        tmp ＝ “\u005d”
+                    .默认
+
+                    .判断结束
+
+                .如果真结束
+                写到内存 (tmp, ptr ＋ pos, )
+                pos ＝ pos ＋ 取文本长度 (tmp)
+            .如果结束
+
+        .判断结束
+
+    .判断 (plane ≥ 57344 且 plane ≤ 65535)  ' 单码元范围: 0000 - D7FF | E000 - FFFF
+        tmp ＝ UnicodeToAnsi (code)
+        .如果 (tmp ＝ “??” 或 tmp ＝ “” 或 取文本长度 (tmp) ＞ 2)
+            tmp ＝ _Bin2Hex (code)
+            写到内存 ({ 92, 117 }, ptr ＋ pos, )
+            pos ＝ pos ＋ 2
+            写到内存 (tmp, ptr ＋ pos, )
+            pos ＝ pos ＋ 取文本长度 (tmp)
+        .否则
+            写到内存 (tmp, ptr ＋ pos, )
+            pos ＝ pos ＋ 取文本长度 (tmp)
+        .如果结束
+
+    .默认
+        ' 未知平面 太大了 一般遇不到的
+        跳出循环 ()
+    .判断结束
+    i ＝ i ＋ 1
+.判断循环尾 ()
+写到内存 ({ 0 }, ptr ＋ pos, )
+返回 (result)
+
+.子程序 Usc2ToUtf8, 字节集, 公开, 可以将混杂有usc2的ansi文字编码为utf8
+.参数 uscStr, 文本型
+.局部变量 utf16, 字节集
+.局部变量 ptr, 整数型
+.局部变量 pos, 整数型, , , utf16的指针偏移
+.局部变量 utf16Len, 整数型
+.局部变量 i, 整数型
+.局部变量 bys, 字节集
+.局部变量 tmp, 文本型
+.局部变量 result, 字节集
+.局部变量 offset, 整数型, , , 结果数据的偏移
+.局部变量 retPtr, 整数型
+.局部变量 code, 整数型
+.局部变量 bin, 字节集
+
+utf16 ＝ AnsiToUnicode (uscStr)
+ptr ＝ 取变量数据地址_字节集 (utf16)
+utf16Len ＝ 取字节集长度 (utf16)
+pos ＝ 0
+
+result ＝ 取空白字节集 (utf16Len × 3)
+' 反向为什么是3倍?
+' 因为utf16 -> utf8 可能会变长 比如2字节的utf16 -> 3字节utf8(1.5倍)  具体最大是多少 我也不知道  干脆写个3倍
+retPtr ＝ 取变量数据地址_字节集 (result)
+offset ＝ 0
+i ＝ 1
+.判断循环首 (pos ＜ utf16Len)
+    bys ＝ 指针到字节集 (ptr ＋ pos, 2)  ' 判断是不是\u
+    pos ＝ pos ＋ 2
+    .如果真 (pos ≥ utf16Len)  ' 校验\是否最后一个字符
+        bys ＝ UnicodeToUtf8 (bys)
+        写到内存 (bys, retPtr ＋ offset, )
+        offset ＝ offset ＋ 取字节集长度 (bys)
+        跳出循环 ()
+    .如果真结束
+
+    .判断开始 (bys ＝ { 0, 92 })  ' \
+        bys ＝ 指针到字节集 (ptr ＋ pos, 2)  ' 判断是不是\u
+        pos ＝ pos ＋ 2
+        .如果真 (pos ≥ utf16Len)  ' 判断\u是不是结束字符
+            bys ＝ UnicodeToUtf8 ({ 0, 92 } ＋ bys)  ' \u
+            写到内存 (bys, retPtr ＋ offset, )
+            offset ＝ offset ＋ 取字节集长度 (bys)
+            跳出循环 ()
+        .如果真结束
+
+        .判断开始 (bys ＝ { 0, 117 })  ' u
+            .如果真 (pos ＋ 8 ＞ utf16Len)  ' 判断\u后面是否具体足够字符
+                bys ＝ 指针到字节集 (ptr ＋ pos, utf16Len － pos)  ' 取剩下的
+                bys ＝ UnicodeToUtf8 ({ 0, 92, 0, 117 } ＋ bys)  ' \uxxxx
+                写到内存 (bys, retPtr ＋ offset, )
+                offset ＝ offset ＋ 取字节集长度 (bys)
+                跳出循环 ()
+            .如果真结束
+
+            bys ＝ 指针到字节集 (ptr ＋ pos, 8)  ' 第一个码元的hex数据
+            .判断开始 (isHexString (bys))  ' 是\u后面是hex
+                code ＝ BinToWord (Hex2Bin (UnicodeToAnsi (bys)))
+                .判断开始 (code ≥ 55296 且 code ≤ 57343)  ' D800-DFFF 区间是两个码元 也就是4字节
+
+                    .如果真 (pos ＋ 8 ＋ 4 ＞ utf16Len)  ' 判断第二个码元的\u是否存在 如果不存在 直接跳出
+                        bin ＝ 指针到字节集 (ptr ＋ pos, 8 ＋ utf16Len － pos)  ' 取剩下的
+                        bys ＝ UnicodeToUtf8 ({ 0, 92, 0, 117 } ＋ bin)  ' \uxxxx \
+                        写到内存 (bys, retPtr ＋ offset, )
+                        offset ＝ offset ＋ 取字节集长度 (bys)
+                        跳出循环 ()  ' 结尾拉
+                    .如果真结束
+
+                    bin ＝ 指针到字节集 (ptr ＋ pos ＋ 8, 4)
+                    .判断开始 (bin ＝ { 0, 92, 0, 117 })  ' \u
+
+                        .如果真 (pos ＋ 8 ＋ 4 ＋ 8 ＞ utf16Len)  ' 判断第二个码元的\u是否有足够字符
+                            bin ＝ 指针到字节集 (ptr ＋ pos, 8 ＋ 4 ＋ utf16Len － pos)  ' 取剩下的
+                            bys ＝ UnicodeToUtf8 ({ 0, 92, 0, 117 } ＋ bin)  ' \uxxxx \
+                            写到内存 (bys, retPtr ＋ offset, )
+                            offset ＝ offset ＋ 取字节集长度 (bys)
+                            跳出循环 ()  ' 结尾拉
+                        .如果真结束
+
+                        bin ＝ 指针到字节集 (ptr ＋ pos ＋ 12, 8)  ' 第二个码元的hex数据
+                        .判断开始 (isHexString (bin))  ' 是\u后面是hex
+                            code ＝ BinToWord (Hex2Bin (UnicodeToAnsi (bin)))
+                            .判断开始 (code ≥ 56320 且 code ≤ 57343)  ' 第二个码元的范围 DC00 - DFFF
+                                ' 合法的2个码元 utf16
+                                bys ＝ UnicodeToUtf8 (Hex2Bin (UnicodeToAnsi (bys ＋ bin)))
+                                写到内存 (bys, retPtr ＋ offset, )
+                                offset ＝ offset ＋ 取字节集长度 (bys)
+                                pos ＝ pos ＋ 20
+
+                            .默认
+
+
+                                ' 偏移移动到 \u后  第二码元  不能动  可能是下一个码元的数据
+                                bys ＝ UnicodeToUtf8 (Hex2Bin (UnicodeToAnsi ({ 0, 92, 0, 117 } ＋ bys)))
+                                写到内存 (bys, retPtr ＋ offset, )
+                                offset ＝ offset ＋ 取字节集长度 (bys)
+                                pos ＝ pos ＋ 8
+                            .判断结束
+
+                        .默认
+
+                            ' 第二个码元 \u后面不是hex数据  所以第一个码元按照 string 处理
+                            bys ＝ UnicodeToUtf8 (Hex2Bin (UnicodeToAnsi ({ 0, 92, 0, 117 } ＋ bys)))
+                            写到内存 (bys, retPtr ＋ offset, )
+                            offset ＝ offset ＋ 取字节集长度 (bys)
+                            pos ＝ pos ＋ 8
+
+                        .判断结束
+
+                    .默认
+
+                        bys ＝ UnicodeToUtf8 (Hex2Bin (UnicodeToAnsi ({ 0, 92, 0, 117 } ＋ bys)))
+                        写到内存 (bys, retPtr ＋ offset, )
+                        offset ＝ offset ＋ 取字节集长度 (bys)
+                        pos ＝ pos ＋ 8
+
+                        ' 非法的四字节的utf16  直接按ansi处理
+
+                    .判断结束
+
+                .判断 (code ＞ 0 且 code ≤ 55295)  ' 单码元范围: 0000 - D7FF | E000 - FFFF
+                    bys ＝ UnicodeToUtf8 (Hex2Bin (UnicodeToAnsi (bys)))
+                    写到内存 (bys, retPtr ＋ offset, )
+                    offset ＝ offset ＋ 取字节集长度 (bys)
+                    pos ＝ pos ＋ 8
+                .判断 (code ≥ 57344 且 code ≤ 65535)  ' 单码元范围: 0000 - D7FF | E000 - FFFF
+                    bys ＝ UnicodeToUtf8 (Hex2Bin (UnicodeToAnsi (bys)))
+                    写到内存 (bys, retPtr ＋ offset, )
+                    offset ＝ offset ＋ 取字节集长度 (bys)
+                    pos ＝ pos ＋ 8
+                .默认
+                    ' 不存在的情况
+
+                .判断结束
+
+            .默认
+                ' \u后跟的不是hex
+            .判断结束
+
+        .默认
+            ' \后面跟的不是u
+
+            bys ＝ UnicodeToUtf8 ({ 0, 92 } ＋ bys)
+            写到内存 (bys, retPtr ＋ offset, )
+            offset ＝ offset ＋ 取字节集长度 (bys)
+
+        .判断结束
+
+    .默认
+        ' 不是\
+
+        bys ＝ UnicodeToUtf8 (bys)
+        写到内存 (bys, retPtr ＋ offset, )
+        offset ＝ offset ＋ 取字节集长度 (bys)
+    .判断结束
+    i ＝ i ＋ 1
+.判断循环尾 ()
+bys ＝ 取字节集左边 (result, offset)
+返回 (bys)
+
+.子程序 取变量数据地址_字节集, 整数型
+.参数 参数_字节集, 字节集
+
+置入代码 ({ 139, 69, 8, 139, 0, 5, 8, 0, 0, 0, 201, 194, 4, 0 })
+' mov eax,[ebp+08]
+' mov eax,[eax]
+' add eax,08
+' leave
+' retn 04
+返回 (0)
+
+.子程序 取变量数据地址_文本, 整数型
+.参数 参数_文本, 文本型
+
+置入代码 ({ 139, 69, 8, 139, 0, 201, 194, 4, 0 })
+' mov eax,[ebp+8]
+' mov eax,[eax]
+' leave
+' retn 04
+返回 (0)
+
+.子程序 Utf8ToAnsi, 文本型
+.参数 utf8, 字节集
+.局部变量 handle, 整数型
+.局部变量 bool, 逻辑型
+.局部变量 str, 文本型
+.局部变量 bin, 字节集
+
+handle ＝ 编码转换_打开 (“UTF-8”, “GB18030”)
+bin ＝ 编码转换_转换 (handle, utf8, bool)
+.如果真 (bool)
+    str ＝ 到文本 (bin)
+.如果真结束
+bool ＝ 编码转换_关闭 (handle)
+返回 (str)
+
+.子程序 文本转义, 文本型, 公开, 将文本当中的[、]、\进行转义以防框架误识文本为文本代码
+.参数 文本, 文本型
+.局部变量 bin, 字节集
+.局部变量 B, 整数型
+.局部变量 A, 整数型
+.局部变量 C, 整数型
+.局部变量 t, 文本型
+.局部变量 ret, 文本型
+
+bin ＝ 到字节集 (文本)
+A ＝ 取字节集长度 (bin)
+B ＝ 1
+.判断循环首 (B ≤ A)
+    .如果 (B ＋ 1 ＞ A)
+        C ＝ 1
+    .否则
+        .如果 (bin [B] ＞ 128)
+            C ＝ 2
+        .否则
+            .如果 (bin [B] ≠ 13)
+                C ＝ 1
+            .否则
+                .如果 (bin [B ＋ 1] ＝ 10)
+                    C ＝ 2
+                .否则
+                    C ＝ 1
+                .如果结束
+
+            .如果结束
+
+        .如果结束
+
+    .如果结束
+    t ＝ 到文本 (取字节集中间 (bin, B, C))
+    .判断开始 (t ＝ “\”)
+        t ＝ “\u005c”
+    .判断 (t ＝ “[”)
+        t ＝ “\u005b”
+    .判断 (t ＝ “]”)
+        t ＝ “\u005d”
+    .默认
+
+    .判断结束
+    ret ＝ ret ＋ t
+    B ＝ B ＋ C
+.判断循环尾 ()
+返回 (ret)
+
+.子程序 文本反转义, 文本型, 公开, 将经过转义的[、]、\反转义回来
+.参数 文本, 文本型
+.局部变量 bin, 字节集
+.局部变量 ret, 文本型
+
+bin ＝ Usc2ToUtf8 (文本)
+ret ＝ Utf8ToUsc2 (bin)
+返回 (ret)
+
+.子程序 解码_回复消息内容, 文本型, 公开, 传入 回复消息 文本代码,返回被回复者发送的消息内容
+.参数 回复消息文本代码, 文本型, , 仅支持传入一条
+.局部变量 content, 文本型
+
+content ＝ 文本_取出中间文本 (回复消息文本代码, “Content=”, “,”, , )
+.如果真 (content ≠ “”)
+    content ＝ Utf8ToUsc2 (Usc2ToUtf8 (content), )
+    返回 (content)
+.如果真结束
+返回 (“”)
+
+.子程序 解码_厘米秀信息, 文本型, 公开, 传入 厘米秀 文本代码,返回info字段内容(json)
+.参数 厘米秀文本代码, 文本型, , 仅支持传入一条
+.局部变量 content, 文本型
+
+content ＝ 文本_取出中间文本 (厘米秀文本代码, “info=”, “]”, , )
+.如果真 (content ≠ “”)
+    content ＝ Utf8ToUsc2 (Usc2ToUtf8 (content), )
+    返回 (content)
+.如果真结束
+返回 (“”)
+
+.子程序 编码_URL编码_utf8, 文本型, 公开, 配合函数【usc2toutf8】以此支持韩文查询
+.参数 欲编码的文本, 字节集, , 直接传入utf8文本
+.参数 不编码字母数字, 逻辑型, 可空, 不需要编码【字母数字.-】可以把此参数设置为真  留空为真
+.参数 编码保留字符, 逻辑型, 可空, 为真时 MODE 无效  各种保留字符全部编码  留空为假
+.参数 MODE, 整数型, 可空, 0 encodeURIComponent 1 encodeURI 2 escape 默认为0
+.局部变量 Result, 字节集
+.局部变量 Data, 字节集
+.局部变量 DataLen, 整数型
+.局部变量 i, 整数型
+.局部变量 j, 整数型
+.局部变量 tempBool, 逻辑型
+.局部变量 _pos, 整数型
+.局部变量 HEX, 字节集
+
+.如果真 (是否为空 (不编码字母数字))
+    不编码字母数字 ＝ 真
+.如果真结束
+.如果真 (MODE ＜ 0 或 MODE ＞ 2)
+    MODE ＝ 0
+.如果真结束
+
+
+Data ＝ 欲编码的文本
+
+DataLen ＝ 取字节集长度 (Data)
+Result ＝ 取空白字节集 (3 × DataLen)
+_pos ＝ 0
+HEX ＝ 到字节集 (“0123456789ABCDEF”)
+
+.计次循环首 (DataLen, i)
+
+    .如果真 (不编码字母数字)
+        .判断开始 (48 ≤ Data [i] 且 Data [i] ≤ 57)  ' 0-9
+            tempBool ＝ 真
+        .判断 (65 ≤ Data [i] 且 Data [i] ≤ 90)  ' A-Z
+            tempBool ＝ 真
+        .判断 (97 ≤ Data [i] 且 Data [i] ≤ 122)  ' a-z
+            tempBool ＝ 真
+        .判断 (编码保留字符)
+            tempBool ＝ 假
+        .判断 (Data [i] ＝ 42)  ' *
+            tempBool ＝ 真
+        .判断 (Data [i] ＝ 45)  ' -
+            tempBool ＝ 真
+        .判断 (Data [i] ＝ 46)  ' .
+            tempBool ＝ 真
+        .判断 (Data [i] ＝ 95)  ' _
+            tempBool ＝ 真
+        .判断 (MODE ＜ 2 且 Data [i] ＝ 33)  ' !
+            tempBool ＝ 真
+        .判断 (MODE ＜ 2 且 Data [i] ＝ 39)  ' '
+            tempBool ＝ 真
+        .判断 (MODE ＜ 2 且 Data [i] ＝ 40)  ' (
+            tempBool ＝ 真
+        .判断 (MODE ＜ 2 且 Data [i] ＝ 41)  ' )
+            tempBool ＝ 真
+        .判断 (MODE ＜ 2 且 Data [i] ＝ 126)  ' ~
+            tempBool ＝ 真
+        .判断 (MODE ＞ 0 且 Data [i] ＝ 43)  ' +
+            tempBool ＝ 真
+        .判断 (MODE ＞ 0 且 Data [i] ＝ 47)  ' /
+            tempBool ＝ 真
+        .判断 (MODE ＞ 0 且 Data [i] ＝ 64)  ' @
+            tempBool ＝ 真
+        .判断 (MODE ＝ 1 且 Data [i] ＝ 35)  ' #
+            tempBool ＝ 真
+        .判断 (MODE ＝ 1 且 Data [i] ＝ 36)  ' $
+            tempBool ＝ 真
+        .判断 (MODE ＝ 1 且 Data [i] ＝ 38)  ' &
+            tempBool ＝ 真
+        .判断 (MODE ＝ 1 且 Data [i] ＝ 44)  ' ,
+            tempBool ＝ 真
+        .判断 (MODE ＝ 1 且 Data [i] ＝ 58)  ' :
+            tempBool ＝ 真
+        .判断 (MODE ＝ 1 且 Data [i] ＝ 59)  ' ;
+            tempBool ＝ 真
+        .判断 (MODE ＝ 1 且 Data [i] ＝ 61)  ' =
+            tempBool ＝ 真
+        .判断 (MODE ＝ 1 且 Data [i] ＝ 63)  ' ?
+            tempBool ＝ 真
+        .默认
+            tempBool ＝ 假
+        .判断结束
+
+    .如果真结束
+
+
+    .如果 (tempBool)
+        _pos ＝ _pos ＋ 1
+        Result [_pos] ＝ Data [i]
+    .否则
+        _pos ＝ _pos ＋ 3
+        Result [_pos － 2] ＝ 37  ' %
+        Result [_pos － 1] ＝ HEX [右移 (Data [i], 4) ＋ 1]
+        Result [_pos] ＝ HEX [位与 (Data [i], 15) ＋ 1]
+
+    .如果结束
+
+.计次循环尾 ()
+
+
+返回 (到文本 (Result))
+
+
+
+
+.子程序 Flip, 字节集, , 反转字节集
+.参数 bin, 字节集
+.局部变量 长度, 整数型
+.局部变量 i, 整数型
+.局部变量 结果, 字节集
+
+长度 ＝ 取字节集长度 (bin)
+.计次循环首 (长度, i)
+    结果 ＝ 结果 ＋ 到字节集 (bin [长度 － i ＋ 1])
+.计次循环尾 ()
+返回 (结果)

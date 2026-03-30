@@ -1,0 +1,12 @@
+LIBRARY
+EXPORTS
+	apprun @1
+	RecvicePrivateMsg @2
+	RecviceGroupMesg @3
+	RecviceEventCallBack @4
+	RotbotAppEnable @5
+	AppSetting @6
+	AppUninstall @7
+	AppDisabled @8
+	GetSMSVerificationCode @9
+	SliderRecognition @10

@@ -1,0 +1,20 @@
+LIBRARY "XiaoLiZiVM_PythonCompat"
+EXPORTS
+    apprun=_apprun@8
+    RecviceGroupMesg=_RecviceGroupMesg@4
+    RecvicePrivateMsg=_RecvicePrivateMsg@4
+    RecviceEventCallBack=_RecviceEventCallBack@4
+    RotbotAppEnable=_RotbotAppEnable@0
+    AppSetting=_AppSetting@0
+    AppUninstall=_AppUninstall@0
+    AppDisabled=_AppDisabled@0
+    GetSMSVerificationCode=_GetSMSVerificationCode@12
+    SliderRecognition=_SliderRecognition@12
+
+    XLZ_Bridge_OutputLog=_XLZ_Bridge_OutputLog@4
+    XLZ_Bridge_SendGroupMessage=_XLZ_Bridge_SendGroupMessage@24
+    XLZ_Bridge_CallApiReturnUtf8=_XLZ_Bridge_CallApiReturnUtf8@8
+    XLZ_Bridge_CallApiReturnU32=_XLZ_Bridge_CallApiReturnU32@8
+    XLZ_Bridge_CallApiVoid=_XLZ_Bridge_CallApiVoid@8
+    XLZ_Bridge_Utf8ToUsc2AnsiPtr=_XLZ_Bridge_Utf8ToUsc2AnsiPtr@4
+    XLZ_Bridge_ResetTempStrings=_XLZ_Bridge_ResetTempStrings@0

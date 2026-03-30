@@ -1,0 +1,4 @@
+LIBRARY "xlz_pyruntime"
+EXPORTS
+    XLZ_PyInitialize=_XLZ_PyInitialize@0
+    XLZ_PyFinalize=_XLZ_PyFinalize@0

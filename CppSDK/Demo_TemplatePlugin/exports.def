@@ -1,0 +1,13 @@
+LIBRARY "XiaoLiZiVM_CppSDK_Template"
+EXPORTS
+    apprun=_apprun@8
+    RecviceGroupMesg=_RecviceGroupMesg@4
+    RecvicePrivateMsg=_RecvicePrivateMsg@4
+    RecviceEventCallBack=_RecviceEventCallBack@4
+    RotbotAppEnable=_RotbotAppEnable@0
+    AppSetting=_AppSetting@0
+    AppUninstall=_AppUninstall@0
+    AppDisabled=_AppDisabled@0
+    GetSMSVerificationCode=_GetSMSVerificationCode@12
+    SliderRecognition=_SliderRecognition@12
+

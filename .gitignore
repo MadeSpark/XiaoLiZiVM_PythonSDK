@@ -1,0 +1,29 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.ncb
+*.sdf
+*.opensdf
+ipch/
+
+# Build intermediates (keep bin/Release DLLs)
+bin/obj/
+*.log
+*.recipe
+*.iobj
+*.ipdb
+*.pdb
+*.exp
+*.lib
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Plugin runtime temp
+debug.log
+.xlz_pystate_*.txt
