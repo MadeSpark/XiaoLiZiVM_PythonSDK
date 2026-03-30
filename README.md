@@ -308,4 +308,15 @@ python PythonSDK/tools/pack_payload.py \
 
 ## License
 
-MIT
+GNU Lesser General Public License v3.0 (LGPL-3.0)
+
+## C++ 兼容层修改发布说明
+
+本项目的 C++ 兼容层（`PythonSDK/plugin.cpp` 与 `xlz_pyruntime/xlz_pyruntime.cpp`）按 LGPL-3.0 进行发布与约束。
+
+若你修改了上述任一文件并对外发布（无论源码或二进制），你必须公开你对这两部分兼容层代码的修改源码。
+
+这并不强制你开源整个项目；你自己的业务代码、上层插件逻辑可以保持闭源。但兼容层修改部分必须可获取。
+
+
+
