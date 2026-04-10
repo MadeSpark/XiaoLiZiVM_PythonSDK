@@ -231,7 +231,7 @@ class Bridge:
 
     # 取插件数据目录, 文本型, 公开
     def get_plugin_data_directory(self) -> str:
-        return self._call_utf8("取插件数据目录")
+        return self._call_utf8("取插件数据目录").rstrip()
 
     # 重载自身, 公开
     def reload_itself(self, new_dll_path_utf8: str = "empty") -> None:

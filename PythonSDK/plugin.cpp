@@ -120,6 +120,30 @@ static std::string EscapePy(const std::string& s)
 	return o;
 }
 
+static void TrimRightAsciiWhitespace(std::string& s)
+{
+	while(!s.empty()){
+		const unsigned char c = static_cast<unsigned char>(s.back());
+		if(c==' ' || c=='\t' || c=='\r' || c=='\n') s.pop_back();
+		else break;
+	}
+}
+
+static void NormalizeReturnedUtf8(const char* api, std::string& s)
+{
+	TrimRightAsciiWhitespace(s);
+	if(!api || s.empty()) return;
+	if(std::strcmp(api, xlz::kApiName_GetPluginDataDirectory_Utf8)!=0) return;
+
+	bool hasTrailingSlash = false;
+	while(!s.empty() && (s.back()=='\\' || s.back()=='/')){
+		hasTrailingSlash = true;
+		s.pop_back();
+	}
+	TrimRightAsciiWhitespace(s);
+	if(hasTrailingSlash) s.push_back('\\');
+}
+
 static bool ResolveSelfPath()
 {
 	wchar_t p[MAX_PATH]={}; HMODULE h=nullptr;
@@ -136,6 +160,34 @@ static std::vector<std::string> Split(const std::string& s,char sep)
 {
 	std::vector<std::string> o; std::string c;
 	for(char ch:s){if(ch==sep){o.push_back(c);c.clear();}else c+=ch;} o.push_back(c); return o;
+}
+
+static std::vector<uint32_t> BuildPackedArgs(const char* s)
+{
+	xlz::ArgPacker p;
+	if(!s||!*s) return p.Data();
+	for(const auto& item:Split(s,'|')){
+		auto pos=item.find(':'); if(pos==std::string::npos) continue;
+		const std::string t=item.substr(0,pos),v=item.substr(pos+1);
+		if(t=="u32") p.PushU32((uint32_t)std::stoul(v));
+		else if(t=="u64") p.PushU64((uint64_t)std::stoull(v));
+		else if(t=="i32") p.PushU32((uint32_t)std::stol(v));
+		else if(t=="i64") p.PushU64((uint64_t)std::stoll(v));
+		else if(t=="b") p.PushU32((v=="1"||v=="true")?1u:0u);
+		else if(t=="p") p.PushPtr((const void*)(uintptr_t)std::stoull(v));
+		else if(t=="s"){g_tempUsc2AnsiPool.push_back(xlz::Utf8ToUsc2Ansi(v.c_str()));p.PushPtr(g_tempUsc2AnsiPool.back().c_str());}
+	}
+	return p.Data();
+}
+
+static std::vector<uint32_t> BuildPackedArgsWithPluginKey(const char* s)
+{
+	xlz::ArgPacker p;
+	p.PushPtr(g_sdk.PluginKey().c_str());
+	auto rest = BuildPackedArgs(s);
+	auto out = p.Data();
+	out.insert(out.end(), rest.begin(), rest.end());
+	return out;
 }
 
 static std::string ReadAllText(const std::string& p)
@@ -369,24 +421,6 @@ static bool SetupPayload(const char* pluginkey)
 	return true;
 }
 
-static std::vector<uint32_t> BuildPackedArgs(const char* s)
-{
-	xlz::ArgPacker p;
-	if(!s||!*s) return p.Data();
-	for(const auto& item:Split(s,'|')){
-		auto pos=item.find(':'); if(pos==std::string::npos) continue;
-		const std::string t=item.substr(0,pos),v=item.substr(pos+1);
-		if(t=="u32") p.PushU32((uint32_t)std::stoul(v));
-		else if(t=="u64") p.PushU64((uint64_t)std::stoull(v));
-		else if(t=="i32") p.PushU32((uint32_t)std::stol(v));
-		else if(t=="i64") p.PushU64((uint64_t)std::stoll(v));
-		else if(t=="b") p.PushU32((v=="1"||v=="true")?1u:0u);
-		else if(t=="p") p.PushPtr((const void*)(uintptr_t)std::stoull(v));
-		else if(t=="s"){g_tempUsc2AnsiPool.push_back(xlz::Utf8ToUsc2Ansi(v.c_str()));p.PushPtr(g_tempUsc2AnsiPool.back().c_str());}
-	}
-	return p.Data();
-}
-
 // ===== Python 桥接导出 =====
 XLZ_API void XLZ_CALL XLZ_Bridge_ResetTempStrings(){g_tempUsc2AnsiPool.clear();}
 
@@ -410,19 +444,20 @@ XLZ_API const char* XLZ_CALL XLZ_Bridge_SendGroupMessage(long long tqq,long long
 XLZ_API const char* XLZ_CALL XLZ_Bridge_CallApiReturnUtf8(const char* api,const char* args)
 {
 	DebugLog(std::string("XLZ_Bridge_CallApiReturnUtf8: api=")+(api?api:"null")+", args="+(args?args:"null"));
-	g_lastUtf8Ret=g_sdk.CallApiReturnUtf8(api?api:"",BuildPackedArgs(args));
+	g_lastUtf8Ret=g_sdk.CallApiReturnUtf8(api?api:"",BuildPackedArgsWithPluginKey(args));
+	NormalizeReturnedUtf8(api, g_lastUtf8Ret);
 	DebugLog(std::string("XLZ_Bridge_CallApiReturnUtf8: ret=")+g_lastUtf8Ret);
 	return g_lastUtf8Ret.c_str();
 }
 
 XLZ_API unsigned int XLZ_CALL XLZ_Bridge_CallApiReturnU32(const char* api,const char* args)
 {
-	return g_sdk.CallApiReturnU32(api?api:"",BuildPackedArgs(args));
+	return g_sdk.CallApiReturnU32(api?api:"",BuildPackedArgsWithPluginKey(args));
 }
 
 XLZ_API void XLZ_CALL XLZ_Bridge_CallApiVoid(const char* api,const char* args)
 {
-	g_sdk.CallApiVoid(api?api:"",BuildPackedArgs(args));
+	g_sdk.CallApiVoid(api?api:"",BuildPackedArgsWithPluginKey(args));
 }
 
 // 专用图片上传接口：在C++层持有图片数据，避免Python GC问题
@@ -437,6 +472,14 @@ XLZ_API const char* XLZ_CALL XLZ_Bridge_UploadGroupImage(long long thisQq, long 
 }
 
 // ===== 事件转发（空壳，全部转 Python）=====
+static bool IsNoArgCallback(const std::string& func)
+{
+	return func=="on_enable"
+		|| func=="on_disable"
+		|| func=="on_uninstall"
+		|| func=="on_setting";
+}
+
 static int PyCallEventWithReturn(const std::string& func, const std::string& dictLiteral)
 {
 	if(g_pyPayloadDirUtf8.empty() || g_pyModuleName.empty()){
@@ -512,7 +555,11 @@ static int PyCallEventWithReturn(const std::string& func, const std::string& dic
 	py << "        _sp.loader.exec_module(_pm)\n";
 	py << "    _ret=0\n";
 	py << "    try:\n";
-	py << "        _ret=getattr(_pm,'" << func << "',lambda e:0)(" << dictLiteral << ")\n";
+	if(IsNoArgCallback(func)){
+		py << "        _ret=getattr(_pm,'" << func << "',lambda:0)()\n";
+	}else{
+		py << "        _ret=getattr(_pm,'" << func << "',lambda e:0)(" << dictLiteral << ")\n";
+	}
 	py << "        _ret=int(_ret) if _ret is not None else 0\n";
 	py << "    except Exception:\n";
 	py << "        import traceback\n";
@@ -541,15 +588,32 @@ XLZ_API int XLZ_CALL RecviceGroupMesg(void* data)
 	if(!ev){ DebugLog("RecviceGroupMesg: null data"); return 0; }
 	const std::string msg = xlz::GetGroupMessageContentUtf8(*ev);
 	DebugLog(std::string("RecviceGroupMesg: group=")+std::to_string((long long)ev->MessageGroupQQ)+", sender="+std::to_string((long long)ev->SenderQQ)+", msg="+msg);
-	//if(g_debugEnabled) xlz::OutputLog(g_sdk, (std::string("[PythonSDK-C++] 收到群消息: ")+msg).c_str());
 	DebugLog("RecviceGroupMesg: before PyCallEvent");
 	std::ostringstream d;
 	d << "{'this_qq':" << ev->ThisQQ
 	  << ",'group_qq':" << ev->MessageGroupQQ
 	  << ",'sender_qq':" << ev->SenderQQ
+	  << ",'message_req':" << ev->MessageReq
+	  << ",'message_receive_time':" << ev->MessageReceiveTime
+	  << ",'message_send_time':" << ev->MessageSendTime
+	  << ",'message_random':" << ev->MessageRandom
+	  << ",'message_clip':" << ev->MessageClip
+	  << ",'message_clip_count':" << ev->MessageClipCount
+	  << ",'message_clip_id':" << ev->MessageClipID
+	  << ",'message_type':" << ev->MessageType
+	  << ",'bubble_id':" << ev->BubbleID
+	  << ",'group_chat_level':" << ev->GroupChatLevel
+	  << ",'pendant_id':" << ev->PendantID
+	  << ",'anonymous_id':" << ev->AnonymousId
+	  << ",'font_id':" << ev->FontId
 	  << ",'message':'" << EscapePy(msg) << "'";
 	d << ",'group_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SourceGroupName?ev->SourceGroupName:"")) << "'";
-	d << ",'sender_nick':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SenderNickname?ev->SenderNickname:"")) << "'}";
+	d << ",'sender_nick':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SenderNickname?ev->SenderNickname:"")) << "'";
+	d << ",'sender_title':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SenderTitle?ev->SenderTitle:"")) << "'";
+	d << ",'reply_message':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->ReplyMessageContent?ev->ReplyMessageContent:"")) << "'";
+	d << ",'anonymous_nickname':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->AnonymousNickname?ev->AnonymousNickname:"")) << "'";
+	d << ",'reserved_parameters':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->ReservedParameters?ev->ReservedParameters:"")) << "'";
+	d << "}";
 	return PyCallEventWithReturn("on_group_message",d.str());
 }
 
@@ -561,7 +625,28 @@ XLZ_API int XLZ_CALL RecvicePrivateMsg(void* data)
 	std::ostringstream d;
 	d << "{'this_qq':" << ev->ThisQQ
 	  << ",'sender_qq':" << ev->SenderQQ
-	  << ",'message':'" << EscapePy(xlz::GetPrivateMessageContentUtf8(*ev)) << "'}";
+	  << ",'message_req':" << ev->MessageReq
+	  << ",'message_seq':" << ev->MessageSeq
+	  << ",'message_receive_time':" << ev->MessageReceiveTime
+	  << ",'message_group_qq':" << ev->MessageGroupQQ
+	  << ",'message_send_time':" << ev->MessageSendTime
+	  << ",'message_random':" << ev->MessageRandom
+	  << ",'message_clip':" << ev->MessageClip
+	  << ",'message_clip_count':" << ev->MessageClipCount
+	  << ",'message_clip_id':" << ev->MessageClipID
+	  << ",'bubble_id':" << ev->BubbleID
+	  << ",'message_type':" << ev->MessageType
+	  << ",'message_sub_type':" << ev->MessageSubType
+	  << ",'message_sub_temporary_type':" << ev->MessageSubTemporaryType
+	  << ",'red_envelope_type':" << ev->RedEnvelopeType
+	  << ",'source_event_qq':" << ev->SourceEventQQ
+	  << ",'msg_group_id':" << ev->MsgGroupId
+	  << ",'message':'" << EscapePy(xlz::GetPrivateMessageContentUtf8(*ev)) << "'";
+	d << ",'source_event_qq_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SourceEventQQName?ev->SourceEventQQName:"")) << "'";
+	d << ",'file_id':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->FileID?ev->FileID:"")) << "'";
+	d << ",'file_md5':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->FileMD5?ev->FileMD5:"")) << "'";
+	d << ",'file_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->FileName?ev->FileName:"")) << "'";
+	d << "}";
 	return PyCallEventWithReturn("on_private_message",d.str());
 }
 
@@ -574,8 +659,15 @@ XLZ_API int XLZ_CALL RecviceEventCallBack(void* data)
 	  << ",'event_type':" << ev->EventType
 	  << ",'event_sub_type':" << ev->EventSubType
 	  << ",'trigger_qq':" << ev->TriggerQQ
-	  << ",'source_group_qq':" << ev->SourceGroupQQ << ",'operate_qq':" << ev->OperateQQ
-	  << ",'message':'" << EscapePy(xlz::GetEventMessageContentUtf8(*ev)) << "'}";
+	  << ",'source_group_qq':" << ev->SourceGroupQQ
+	  << ",'operate_qq':" << ev->OperateQQ
+	  << ",'message_seq':" << ev->MessageSeq
+	  << ",'message_time':" << ev->MessageTime
+	  << ",'message':'" << EscapePy(xlz::GetEventMessageContentUtf8(*ev)) << "'";
+	d << ",'source_group_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SourceGroupName?ev->SourceGroupName:"")) << "'";
+	d << ",'operate_qq_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->OperateQQName?ev->OperateQQName:"")) << "'";
+	d << ",'trigger_qq_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->TriggerQQName?ev->TriggerQQName:"")) << "'";
+	d << "}";
 	return PyCallEventWithReturn("on_event_message",d.str());
 }
 
