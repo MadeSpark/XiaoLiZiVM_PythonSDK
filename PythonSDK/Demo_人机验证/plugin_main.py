@@ -6,7 +6,7 @@ api = None
 PLUGIN_NAME = "人机验证"
 PLUGIN_VERSION = "1.0.0"
 PLUGIN_AUTHOR = "MadeSpark"
-PLUGIN_DESCRIPTION = "检测到有人入群时进行人机验证"
+PLUGIN_DESCRIPTION = "检测到有人入群时进行人机验证\n开源地址：https://github.com/MadeSpark/XiaoLiZiVM_PythonSDK"
 PLUGIN_PERMISSIONS = ["输出日志", "发送群消息", "上传群图片", "取插件数据目录", "撤回消息_群聊", "禁言群成员"]
 TRIGGER_MESSAGE = "验证码测试"
 SETTINGS_FILE_NAME = "插件设置.ini"
@@ -281,7 +281,7 @@ def _handle_join_event(ev:dict)->bool:
     code = _generate_code()
     _set_pending_code(this_qq, group_qq, user_qq, code)
     _send_captcha_message(this_qq, group_qq, user_qq, code, "欢迎入群，请先完成验证")
-    api.mute_group_member(this_qq, group_qq, user_qq, 60)
+    #api.mute_group_member(this_qq, group_qq, user_qq, 60)
     _log(f"检测到入群 event_type={event_type} group={group_qq} qq={user_qq} operate_qq={_safe_int(ev.get('operate_qq'))} sub_type={_safe_int(ev.get('event_sub_type'))}")
     return True
 

@@ -120,6 +120,36 @@ static std::string EscapePy(const std::string& s)
 	return o;
 }
 
+static std::string EscapeFlatText(const std::string& s)
+{
+	std::string o; o.reserve(s.size()+8);
+	for(char c:s){
+		if(c=='\\') o+="\\\\";
+		else if(c=='\n') o+="\\n";
+		else if(c=='\r') o+="\\r";
+		else o+=c;
+	}
+	return o;
+}
+
+static std::string UnescapeFlatText(const std::string& s)
+{
+	std::string o; o.reserve(s.size());
+	for(size_t i=0;i<s.size();++i){
+		const char c=s[i];
+		if(c!='\\' || i+1>=s.size()){
+			o+=c;
+			continue;
+		}
+		const char n=s[i+1];
+		if(n=='n'){ o+='\n'; ++i; }
+		else if(n=='r'){ o+='\r'; ++i; }
+		else if(n=='\\'){ o+='\\'; ++i; }
+		else o+=c;
+	}
+	return o;
+}
+
 static void TrimRightAsciiWhitespace(std::string& s)
 {
 	while(!s.empty()){
@@ -768,11 +798,13 @@ XLZ_API const char* XLZ_CALL apprun(const char* pluginkey,const char* apidata)
 	py << "        _sp.loader.exec_module(_pm)\n";
 	py << "    _ctx={'pluginkey':'" << EscapePy(AcpToUtf8(pluginKeyRaw)) << "','dll_path':r'" << EscapePy(g_dllPathUtf8) << "'}\n";
 	py << "    _info=_pm.apprun(_ctx)\n";
+	py << "    def _flat(_v):\n";
+	py << "        return str(_v or '').replace('\\\\','\\\\\\\\').replace('\\r','\\\\r').replace('\\n','\\\\n')\n";
 	py << "    open(r'" << EscapePy(infoFile) << "','w',encoding='utf-8').write('\\n'.join([\n";
-	py << "f\"app_name={_info.get('app_name','')}\",\n";
-	py << "f\"author={_info.get('author','')}\",\n";
-	py << "f\"app_version={_info.get('app_version','')}\",\n";
-	py << "f\"description={_info.get('description','')}\",\n";
+	py << "f\"app_name={_flat(_info.get('app_name',''))}\",\n";
+	py << "f\"author={_flat(_info.get('author',''))}\",\n";
+	py << "f\"app_version={_flat(_info.get('app_version',''))}\",\n";
+	py << "f\"description={_flat(_info.get('description',''))}\",\n";
 	py << "f\"permissions={','.join(_info.get('permissions') or [])}\"\n";
 	py << "]))\n";
 	py << "except Exception:\n";
@@ -795,7 +827,7 @@ XLZ_API const char* XLZ_CALL apprun(const char* pluginkey,const char* apidata)
 			if(k=="app_name") name=v;
 			else if(k=="author") author=v;
 			else if(k=="app_version") version=v;
-			else if(k=="description") desc=v;
+			else if(k=="description") desc=UnescapeFlatText(v);
 			else if(k=="permissions") perms=v;
 		}
 	}
