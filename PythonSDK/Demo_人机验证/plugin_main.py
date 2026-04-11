@@ -33,9 +33,9 @@ GIF_FRAME_COUNT = 18
 # 每帧持续时间（毫秒）；越小播放越快
 GIF_FRAME_DURATION_MS = 90
 # 纵向切片总数；用于把验证码图像切成多条碎片
-SLICE_COUNT = 8
+SLICE_COUNT = 7
 # 每一帧里真正显示正确位置的切片数量；越小越难识别
-REAL_SLICE_COUNT_PER_FRAME = 4
+REAL_SLICE_COUNT_PER_FRAME = 2
 # 验证码内容距离图片边缘的内边距
 GIF_PADDING = 24
 # GIF背景主色，格式为 RGB 三元组
@@ -44,6 +44,25 @@ BACKGROUND_COLOR = (18, 24, 38)
 FOREGROUND_COLOR = (242, 245, 250)
 # 验证码字符与干扰线使用的高亮颜色列表，会循环取用
 ACCENT_COLORS = [(87,214,255),(255,170,76),(134,239,172),(255,105,180),(196,181,253)]
+# 验证码字体候选列表；会尽量随机使用至少 3 种不同字体
+CAPTCHA_FONT_CANDIDATES = [
+    "arial.ttf", "arialbd.ttf", "times.ttf", "timesbd.ttf",
+    "simhei.ttf", "msyh.ttc", "simsun.ttc", "consola.ttf",
+]
+# 验证码字号范围
+CAPTCHA_FONT_MAX_SIZE = 100
+CAPTCHA_FONT_MIN_SIZE = 50
+# 干扰数字字号范围
+NOISE_DIGIT_MAX_SIZE = 25
+NOISE_DIGIT_MIN_SIZE = 10
+# 干扰数字数量
+NOISE_DIGIT_COUNT = 180
+# 单个字符最大旋转角度，左右旋转均不超过该值
+CAPTCHA_ROTATE_MAX_DEGREES = 60
+# 字符间距
+CAPTCHA_CHAR_SPACING = 1
+# 单字符绘制缓冲边距，避免旋转后被裁切
+CAPTCHA_CHAR_PADDING = 16
 _PLUGIN_DIR = Path(__file__).parent
 if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
@@ -170,47 +189,146 @@ def _generate_code()->str:
 
 def _create_text_image(code:str):
     Image, ImageDraw, _, ImageFont = _load_pillow()
-    img = Image.new("RGBA", (GIF_WIDTH, GIF_HEIGHT), (0,0,0,0))
-    draw = ImageDraw.Draw(img)
-    try: font = ImageFont.truetype("arial.ttf", 44)
-    except Exception: font = ImageFont.load_default()
-    box = draw.textbbox((0,0), code, font=font)
-    x = (GIF_WIDTH - (box[2]-box[0])) // 2
-    y = (GIF_HEIGHT - (box[3]-box[1])) // 2 - 4
-    for i, ch in enumerate(code):
-        color = ACCENT_COLORS[i % len(ACCENT_COLORS)]
-        cbox = draw.textbbox((0,0), ch, font=font)
-        draw.text((x, y + (-4 if i % 2 == 0 else 4)), ch, fill=color, font=font)
-        x += (cbox[2]-cbox[0]) + 8
-    return img
+
+    def _load_font(font_name:str, font_size:int):
+        try:
+            return ImageFont.truetype(font_name, font_size)
+        except Exception:
+            return None
+
+    def _load_any_font(font_size:int):
+        random_names = CAPTCHA_FONT_CANDIDATES[:]
+        random.shuffle(random_names)
+        for font_name in random_names:
+            font = _load_font(font_name, font_size)
+            if font is not None:
+                return font_name, font
+        return "default", ImageFont.load_default()
+
+    def _pick_font_specs(base_font_size:int, needed_count:int):
+        distinct_font_count = min(len(CAPTCHA_FONT_CANDIDATES), max(3, min(needed_count, len(CAPTCHA_FONT_CANDIDATES))))
+        chosen_font_names = random.sample(CAPTCHA_FONT_CANDIDATES, distinct_font_count) if CAPTCHA_FONT_CANDIDATES else []
+        specs = []
+        for i in range(needed_count):
+            font_name = chosen_font_names[i % len(chosen_font_names)] if chosen_font_names else ""
+            size_jitter = random.randint(-6, 6)
+            font_size = max(CAPTCHA_FONT_MIN_SIZE, min(CAPTCHA_FONT_MAX_SIZE, base_font_size + size_jitter))
+            specs.append((font_name, font_size))
+        random.shuffle(specs)
+        return specs
+
+    def _measure_layout(font_specs:list[tuple[str, int]]):
+        probe = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+        probe_draw = ImageDraw.Draw(probe)
+        char_images = []
+        total_width = 0
+        max_height = 0
+        for i, ch in enumerate(code):
+            font_name, font_size = font_specs[i]
+            font = _load_font(font_name, font_size) if font_name else None
+            if font is None:
+                _, font = _load_any_font(font_size)
+            color = random.choice(ACCENT_COLORS)
+            cbox = probe_draw.textbbox((0, 0), ch, font=font)
+            char_w = max(1, cbox[2] - cbox[0])
+            char_h = max(1, cbox[3] - cbox[1])
+            pad = CAPTCHA_CHAR_PADDING
+            char_layer = Image.new("RGBA", (char_w + pad * 2, char_h + pad * 2), (0, 0, 0, 0))
+            char_draw = ImageDraw.Draw(char_layer)
+            char_draw.text((pad - cbox[0], pad - cbox[1]), ch, fill=color, font=font)
+            angle = random.uniform(-CAPTCHA_ROTATE_MAX_DEGREES, CAPTCHA_ROTATE_MAX_DEGREES)
+            rotated = char_layer.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
+            char_images.append(rotated)
+            total_width += rotated.size[0]
+            if i != len(code) - 1:
+                total_width += CAPTCHA_CHAR_SPACING
+            max_height = max(max_height, rotated.size[1])
+        return char_images, total_width, max_height
+
+    def _draw_noise_digits(img, protected_boxes:list[tuple[int, int, int, int]]):
+        probe = ImageDraw.Draw(Image.new("RGBA", (1, 1), (0, 0, 0, 0)))
+        grid_step = max(12, NOISE_DIGIT_MAX_SIZE + 8)
+        for cell_top in range(0, img.size[1], grid_step):
+            for cell_left in range(0, img.size[0], grid_step):
+                digit = str(random.randint(0, 9))
+                font_size = random.randint(NOISE_DIGIT_MIN_SIZE, NOISE_DIGIT_MAX_SIZE)
+                _, font = _load_any_font(font_size)
+                color = random.choice(ACCENT_COLORS)
+                bbox = probe.textbbox((0, 0), digit, font=font)
+                text_w = max(1, bbox[2] - bbox[0])
+                text_h = max(1, bbox[3] - bbox[1])
+                pad = 2
+                layer = Image.new("RGBA", (text_w + pad * 2, text_h + pad * 2), (0, 0, 0, 0))
+                layer_draw = ImageDraw.Draw(layer)
+                layer_draw.text((pad - bbox[0], pad - bbox[1]), digit, fill=color, font=font)
+                angle = random.uniform(-CAPTCHA_ROTATE_MAX_DEGREES, CAPTCHA_ROTATE_MAX_DEGREES)
+                rotated = layer.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
+                if rotated.size[0] > grid_step or rotated.size[1] > grid_step:
+                    continue
+                jitter_x = random.randint(0, max(0, grid_step - rotated.size[0]))
+                jitter_y = random.randint(0, max(0, grid_step - rotated.size[1]))
+                slot_left = cell_left + jitter_x
+                slot_top = cell_top + jitter_y
+                if slot_left + rotated.size[0] > img.size[0] or slot_top + rotated.size[1] > img.size[1]:
+                    continue
+                img.alpha_composite(rotated, (slot_left, slot_top))
+
+    canvas_width = GIF_WIDTH
+    base_font_size = CAPTCHA_FONT_MAX_SIZE
+    char_images = []
+    total_width = 0
+    max_height = 0
+    while base_font_size >= CAPTCHA_FONT_MIN_SIZE:
+        font_specs = _pick_font_specs(base_font_size, len(code))
+        char_images, total_width, max_height = _measure_layout(font_specs)
+        if total_width <= canvas_width - GIF_PADDING * 2 and max_height <= GIF_HEIGHT - GIF_PADDING * 2:
+            break
+        base_font_size -= 2
+    else:
+        canvas_width = max(GIF_WIDTH, total_width + GIF_PADDING * 2)
+
+    canvas_width = max(canvas_width, total_width + GIF_PADDING * 2)
+    text_img = Image.new("RGBA", (canvas_width, GIF_HEIGHT), (0,0,0,0))
+    noise_img = Image.new("RGBA", (canvas_width, GIF_HEIGHT), (0,0,0,0))
+    x = max(GIF_PADDING, (canvas_width - total_width) // 2)
+    y = max(GIF_PADDING // 2, (GIF_HEIGHT - max_height) // 2)
+    protected_boxes = []
+    cursor_x = x
+    for char_img in char_images:
+        offset_y = max(0, min(GIF_HEIGHT - char_img.size[1], y + random.randint(-6, 6)))
+        text_img.alpha_composite(char_img, (cursor_x, offset_y))
+        protected_boxes.append((cursor_x, offset_y, cursor_x + char_img.size[0], offset_y + char_img.size[1]))
+        cursor_x += char_img.size[0] + CAPTCHA_CHAR_SPACING
+    _draw_noise_digits(noise_img, [])
+    return text_img, noise_img
 
 def generate_fragmented_captcha_gif(code:str)->tuple[bytes,dict]:
     Image, ImageDraw, ImageFilter, _ = _load_pillow()
     rng = random.Random()
-    sharp = _create_text_image(code)
+    sharp, noise = _create_text_image(code)
+    canvas_width, canvas_height = sharp.size
     soft = sharp.filter(ImageFilter.GaussianBlur(radius=0.7))
-    ghost = Image.new("RGBA", (GIF_WIDTH, GIF_HEIGHT), (8,10,16,185))
+    ghost = Image.new("RGBA", (canvas_width, canvas_height), (8,10,16,185))
     ghost.alpha_composite(soft)
-    slice_h = max(6, (GIF_HEIGHT - GIF_PADDING * 2) // SLICE_COUNT)
+    slice_h = max(6, (canvas_height - GIF_PADDING * 2) // SLICE_COUNT)
     slices, top = [], GIF_PADDING
     for i in range(SLICE_COUNT):
-        bottom = GIF_HEIGHT - GIF_PADDING if i == SLICE_COUNT - 1 else top + slice_h
-        slices.append((GIF_PADDING, top, GIF_WIDTH - GIF_PADDING, bottom))
+        bottom = canvas_height - GIF_PADDING if i == SLICE_COUNT - 1 else top + slice_h
+        slices.append((GIF_PADDING, top, canvas_width - GIF_PADDING, bottom))
         top = bottom
     order = list(range(SLICE_COUNT)); fake = order[:]
     rng.shuffle(order); rng.shuffle(fake)
     frames = []
     for idx in range(GIF_FRAME_COUNT):
-        frame = Image.new("RGBA", (GIF_WIDTH, GIF_HEIGHT), BACKGROUND_COLOR + ())
+        frame = Image.new("RGBA", (canvas_width, canvas_height), BACKGROUND_COLOR + ())
         draw = ImageDraw.Draw(frame)
-        for x in range(0, GIF_WIDTH, 24): draw.line([(x,0),(x,GIF_HEIGHT)], fill=(34,42,62), width=1)
-        for y in range(0, GIF_HEIGHT, 24): draw.line([(0,y),(GIF_WIDTH,y)], fill=(34,42,62), width=1)
-        for _ in range(8):
-            draw.line([(rng.randint(0,GIF_WIDTH-1), rng.randint(0,GIF_HEIGHT-1)), (rng.randint(0,GIF_WIDTH-1), rng.randint(0,GIF_HEIGHT-1))], fill=rng.choice(ACCENT_COLORS), width=1)
+        for x in range(0, canvas_width, 24): draw.line([(x,0),(x,canvas_height)], fill=(34,42,62), width=1)
+        for y in range(0, canvas_height, 24): draw.line([(0,y),(canvas_width,y)], fill=(34,42,62), width=1)
+        frame.alpha_composite(noise)
         frame.alpha_composite(ghost)
         active = {order[(idx + off) % SLICE_COUNT] for off in range(REAL_SLICE_COUNT_PER_FRAME)}
-        sx = int((idx / max(1, GIF_FRAME_COUNT - 1)) * (GIF_WIDTH + 40)) - 20
-        draw.rectangle((sx - 12, 0, sx + 12, GIF_HEIGHT), fill=(255,255,255,10))
+        sx = int((idx / max(1, GIF_FRAME_COUNT - 1)) * (canvas_width + 40)) - 20
+        draw.rectangle((sx - 12, 0, sx + 12, canvas_height), fill=(255,255,255,10))
         for i, box in enumerate(slices):
             ref = box if i in active else slices[fake[i]]
             src = sharp if i in active else soft
@@ -218,12 +336,14 @@ def generate_fragmented_captcha_gif(code:str)->tuple[bytes,dict]:
             frag = src.crop(ref)
             frame.paste(frag, (box[0] + dx, box[1]), frag)
             if i not in active: draw.rectangle(box, fill=(0,0,0,24))
-        draw.rounded_rectangle((10,10,GIF_WIDTH-10,GIF_HEIGHT-10), radius=14, outline=(72,84,120), width=2)
+        for _ in range(8):
+            draw.line([(rng.randint(0,canvas_width-1), rng.randint(0,canvas_height-1)), (rng.randint(0,canvas_width-1), rng.randint(0,canvas_height-1))], fill=rng.choice(ACCENT_COLORS), width=1)
+        draw.rounded_rectangle((10,10,canvas_width-10,canvas_height-10), radius=14, outline=(72,84,120), width=2)
         draw.text((18,14), "HUMAN CHECK", fill=FOREGROUND_COLOR)
         frames.append(frame.filter(ImageFilter.SMOOTH_MORE).convert("P", palette=Image.Palette.ADAPTIVE))
     out = BytesIO()
     frames[0].save(out, format="GIF", save_all=True, append_images=frames[1:], duration=GIF_FRAME_DURATION_MS, loop=0, disposal=2, optimize=False)
-    return out.getvalue(), {"code": code, "slice_count": SLICE_COUNT, "real_slice_count_per_frame": REAL_SLICE_COUNT_PER_FRAME}
+    return out.getvalue(), {"code": code, "slice_count": SLICE_COUNT, "real_slice_count_per_frame": REAL_SLICE_COUNT_PER_FRAME, "canvas_width": canvas_width, "canvas_height": canvas_height}
 
 def _send_captcha_message(this_qq:int, group_qq:int, user_qq:int, code:str, title:str):
     gif_bytes, params = generate_fragmented_captcha_gif(code)
