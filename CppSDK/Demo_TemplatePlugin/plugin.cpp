@@ -2,6 +2,7 @@
 
 #include "xlz_appinfo.h"
 #include "xlz_api_wrappers.h"
+#include "xlz_constants.h"
 #include "xlz_encoding.h"
 #include "xlz_event_utf8.h"
 #include "xlz_events.h"
@@ -46,15 +47,22 @@ static int XLZ_CALL HandleGroupMessage(const xlz::GroupMessageEvent* ev)
 	// 群消息处理（对应：置群消息处理函数 / 群聊回调）
 	if (ev == nullptr)
 	{
-		return 0;
+		return (int)xlz::MessageHandle::Ignore; // 等价于 return 0
 	}
+
+	// 用常量代替魔法数字（对应易语言 #消息类型_XXX）
+	if (ev->MessageType == static_cast<uint32_t>(xlz::MessageType::TemporarySession))
+	{
+		xlz::OutputLog(g_sdk, "group message type: temporary session");
+	}
+
 	const std::string contentUtf8 = xlz::GetGroupMessageContentUtf8(*ev);
-	const std::string log = "RecvGroupMsg | Group=" + std::to_string(static_cast<long long>(ev->MessageGroupQQ)) +
-		" | Sender=" + std::to_string(static_cast<long long>(ev->SenderQQ)) +
+	const std::string log = "RecvGroupMsg | Group=" + std::to_string(static_cast<long long>(ev->MessageGroupUin)) +
+		" | Sender=" + std::to_string(static_cast<long long>(ev->SenderUin)) +
 		" | Content=" + contentUtf8;
 	xlz::OutputLog(g_sdk, log.c_str());
 	xlz::ProcessEvents();
-	return 0;
+	return (int)xlz::MessageHandle::Ignore; // == 0，放行后续插件；拦截用 MessageHandle::Intercept
 }
 
 static int XLZ_CALL HandlePrivateMessage(const xlz::PrivateMessageEvent* ev)
@@ -62,10 +70,10 @@ static int XLZ_CALL HandlePrivateMessage(const xlz::PrivateMessageEvent* ev)
 	// 私聊消息处理（对应：置私聊消息处理函数 / 私聊回调）
 	if (ev == nullptr)
 	{
-		return 0;
+		return (int)xlz::MessageHandle::Ignore;
 	}
 	xlz::ProcessEvents();
-	return 0;
+	return (int)xlz::MessageHandle::Ignore;
 }
 
 static int XLZ_CALL HandleEventMessage(const xlz::EventTypeBase* ev)
@@ -73,10 +81,21 @@ static int XLZ_CALL HandleEventMessage(const xlz::EventTypeBase* ev)
 	// 事件消息处理（对应：置事件消息处理函数 / 事件回调）
 	if (ev == nullptr)
 	{
-		return 0;
+		return (int)xlz::MessageHandle::Ignore;
 	}
+
+	// ev->EventType 用常量判断（对应易语言 #群事件_XXX / #好友事件_XXX）
+	if (ev->EventType == static_cast<uint32_t>(xlz::GroupEvent::MemberJoined))
+	{
+		xlz::OutputLog(g_sdk, "group event: member joined");
+	}
+	if (ev->EventType == static_cast<uint32_t>(xlz::FriendEvent::FriendRequest))
+	{
+		xlz::OutputLog(g_sdk, "friend event: friend request");
+	}
+
 	xlz::ProcessEvents();
-	return 0;
+	return (int)xlz::MessageHandle::Ignore;
 }
 
 XLZ_API int XLZ_CALL RecviceGroupMesg(void* data)
@@ -100,8 +119,9 @@ XLZ_API int XLZ_CALL RecviceEventCallBack(void* data)
 XLZ_API int XLZ_CALL RotbotAppEnable()
 {
 	// 插件启用回调（对应：RotbotAppEnable）
+	// 返回值用常量：EnableResponse::Done(0) 正常启用 / EnableResponse::Reject(8) 拒绝启用
 	xlz::OutputLog(g_sdk, "Plugin enabled");
-	return 0;
+	return (int)xlz::EnableResponse::Done;
 }
 
 XLZ_API int XLZ_CALL AppSetting()

@@ -16,12 +16,21 @@ typedef int (*Py_IsInitialized_t)(void);
 typedef void (*Py_Finalize_t)(void);
 typedef void (*Py_SetPath_t)(const wchar_t*);
 typedef void (*Py_SetProgramName_t)(const wchar_t*);
+typedef void* (*PyEval_SaveThread_t)(void);            // 返回 PyThreadState*
+typedef void (*PyEval_RestoreThread_t)(void*);         // 入参 PyThreadState*
+typedef int (*PyGILState_Ensure_t)(void);
+typedef void (*PyGILState_Release_t)(int);
 
 static Py_Initialize_t g_Py_Initialize = nullptr;
 static Py_IsInitialized_t g_Py_IsInitialized = nullptr;
 static Py_Finalize_t g_Py_Finalize = nullptr;
 static Py_SetPath_t g_Py_SetPath = nullptr;
 static Py_SetProgramName_t g_Py_SetProgramName = nullptr;
+static PyEval_SaveThread_t g_PyEval_SaveThread = nullptr;
+static PyEval_RestoreThread_t g_PyEval_RestoreThread = nullptr;
+
+// 初始化线程的 PyThreadState*：初始化后释放 GIL 时保存，Finalize 前恢复
+static void* g_mainThreadState = nullptr;
 
 static HMODULE g_python_dll = nullptr;
 static std::atomic<int> g_py_initialized(0);
@@ -223,6 +232,16 @@ static int LoadPythonDll(void)
 	g_Py_SetProgramName = reinterpret_cast<Py_SetProgramName_t>(
 		::GetProcAddress(g_python_dll, "Py_SetProgramName"));
 
+	// 自由线程所需：GIL 保存/恢复
+	g_PyEval_SaveThread = reinterpret_cast<PyEval_SaveThread_t>(
+		::GetProcAddress(g_python_dll, "PyEval_SaveThread"));
+	g_PyEval_RestoreThread = reinterpret_cast<PyEval_RestoreThread_t>(
+		::GetProcAddress(g_python_dll, "PyEval_RestoreThread"));
+	if (!g_PyEval_SaveThread || !g_PyEval_RestoreThread)
+	{
+		WriteLog("LoadPythonDll: warning - PyEval_SaveThread/RestoreThread not found");
+	}
+
 	if (!g_Py_Initialize)
 	{
 		WriteLog("LoadPythonDll: failed to get Py_Initialize");
@@ -320,6 +339,22 @@ __declspec(dllexport) int __stdcall XLZ_PyInitialize(void)
 	}
 
 	WriteLog("XLZ_PyInitialize: Python initialized successfully");
+
+	// ── 自由线程关键一步 ──
+	// Py_Initialize 会令当前线程持有 GIL。若不释放，本线程之外的任何线程
+	// 调用 PyGILState_Ensure 都会永久阻塞 —— 表现为「插件只能单线程跑」。
+	// 这里在初始化线程上主动释放 GIL（保存其 PyThreadState），
+	// 之后所有线程（含插件自建线程、异步工作线程）都能正常获取/释放 GIL。
+	if (g_PyEval_SaveThread)
+	{
+		g_mainThreadState = g_PyEval_SaveThread();
+		WriteLog("XLZ_PyInitialize: released GIL on init thread (free-threading enabled)");
+	}
+	else
+	{
+		WriteLog("XLZ_PyInitialize: WARNING - PyEval_SaveThread unavailable, GIL NOT released");
+	}
+
 	g_py_initialized.store(1);
 	return 0;  // 成功
 }
@@ -336,6 +371,14 @@ __declspec(dllexport) int __stdcall XLZ_PyFinalize(void)
 	}
 
 	// 销毁Python解释器
+	// 自由线程：Finalize 必须在持有 GIL 的线程上执行，否则会崩溃。
+	// 若初始化时释放过 GIL，这里先把初始化线程的 PyThreadState 恢复回来。
+	if (g_mainThreadState && g_PyEval_RestoreThread)
+	{
+		WriteLog("XLZ_PyFinalize: restoring GIL on init thread");
+		g_PyEval_RestoreThread(g_mainThreadState);
+		g_mainThreadState = nullptr;
+	}
 	WriteLog("XLZ_PyFinalize: calling Py_Finalize()");
 	if (g_Py_Finalize)
 	{
@@ -353,4 +396,9 @@ __declspec(dllexport) int __stdcall XLZ_PyFinalize(void)
 	WriteLog("XLZ_PyFinalize: Python finalized successfully");
 	g_py_initialized.store(0);
 	return 0;  // 成功
+}
+
+__declspec(dllexport) int __stdcall XLZ_PyIsInitialized(void)
+{
+	return (g_py_initialized.load() != 0) ? 1 : 0;
 }

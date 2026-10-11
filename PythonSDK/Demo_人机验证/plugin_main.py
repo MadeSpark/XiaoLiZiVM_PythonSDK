@@ -100,10 +100,10 @@ def _write_ini(path:Path, cfg:configparser.ConfigParser):
 def _settings_path()->Path:
     return _plugin_data_dir() / SETTINGS_FILE_NAME
 
-def _group_ini_path(this_qq:int, group_qq:int)->Path:
-    p = _plugin_data_dir() / str(this_qq)
+def _group_ini_path(my_uin:int, group_uin:int)->Path:
+    p = _plugin_data_dir() / str(my_uin)
     p.mkdir(parents=True, exist_ok=True)
-    return p / f"{group_qq}.ini"
+    return p / f"{group_uin}.ini"
 
 def _load_settings()->configparser.ConfigParser:
     path = _settings_path()
@@ -117,55 +117,55 @@ def _load_settings()->configparser.ConfigParser:
         _write_ini(path, cfg)
     return cfg
 
-def _load_group_cfg(this_qq:int, group_qq:int)->configparser.ConfigParser:
-    path = _group_ini_path(this_qq, group_qq)
+def _load_group_cfg(my_uin:int, group_uin:int)->configparser.ConfigParser:
+    path = _group_ini_path(my_uin, group_uin)
     cfg = _read_ini(path)
     if not cfg.has_section(GROUP_CONFIG_SECTION):
         cfg[GROUP_CONFIG_SECTION] = {GROUP_SWITCH_KEY: GROUP_SWITCH_OFF}
         _write_ini(path, cfg)
     return cfg
 
-def _save_group_cfg(this_qq:int, group_qq:int, cfg:configparser.ConfigParser):
-    _write_ini(_group_ini_path(this_qq, group_qq), cfg)
+def _save_group_cfg(my_uin:int, group_uin:int, cfg:configparser.ConfigParser):
+    _write_ini(_group_ini_path(my_uin, group_uin), cfg)
 
-def _is_group_enabled(this_qq:int, group_qq:int)->bool:
-    return _load_group_cfg(this_qq, group_qq).get(GROUP_CONFIG_SECTION, GROUP_SWITCH_KEY, fallback=GROUP_SWITCH_OFF) == GROUP_SWITCH_ON
+def _is_group_enabled(my_uin:int, group_uin:int)->bool:
+    return _load_group_cfg(my_uin, group_uin).get(GROUP_CONFIG_SECTION, GROUP_SWITCH_KEY, fallback=GROUP_SWITCH_OFF) == GROUP_SWITCH_ON
 
-def _set_group_enabled(this_qq:int, group_qq:int, enabled:bool):
-    cfg = _load_group_cfg(this_qq, group_qq)
+def _set_group_enabled(my_uin:int, group_uin:int, enabled:bool):
+    cfg = _load_group_cfg(my_uin, group_uin)
     cfg[GROUP_CONFIG_SECTION][GROUP_SWITCH_KEY] = GROUP_SWITCH_ON if enabled else GROUP_SWITCH_OFF
-    _save_group_cfg(this_qq, group_qq, cfg)
+    _save_group_cfg(my_uin, group_uin, cfg)
 
-def _get_pending_code(this_qq:int, group_qq:int, user_qq:int)->str:
-    cfg = _load_group_cfg(this_qq, group_qq)
+def _get_pending_code(my_uin:int, group_uin:int, user_qq:int)->str:
+    cfg = _load_group_cfg(my_uin, group_uin)
     sec = str(user_qq)
     return cfg.get(sec, CAPTCHA_KEY, fallback="").strip() if cfg.has_section(sec) else ""
 
-def _set_pending_code(this_qq:int, group_qq:int, user_qq:int, code:str):
-    cfg = _load_group_cfg(this_qq, group_qq)
+def _set_pending_code(my_uin:int, group_uin:int, user_qq:int, code:str):
+    cfg = _load_group_cfg(my_uin, group_uin)
     sec = str(user_qq)
     if not cfg.has_section(sec): cfg.add_section(sec)
     cfg.set(sec, CAPTCHA_KEY, code)
-    _save_group_cfg(this_qq, group_qq, cfg)
+    _save_group_cfg(my_uin, group_uin, cfg)
 
-def _clear_pending_code(this_qq:int, group_qq:int, user_qq:int):
-    cfg = _load_group_cfg(this_qq, group_qq)
+def _clear_pending_code(my_uin:int, group_uin:int, user_qq:int):
+    cfg = _load_group_cfg(my_uin, group_uin)
     sec = str(user_qq)
     if cfg.has_section(sec):
         cfg.remove_section(sec)
-        _save_group_cfg(this_qq, group_qq, cfg)
+        _save_group_cfg(my_uin, group_uin, cfg)
 
 def _message_mention(user_qq:int)->str:
     return f"[CQ:at,qq={user_qq}]"
 
-def _extract_this_qq(ev:dict)->int:
-    return _safe_int(ev.get("this_qq"))
+def _extract_my_uin(ev:dict)->int:
+    return _safe_int(ev.get("my_uin"))
 
-def _extract_group_qq(ev:dict)->int:
-    return _safe_int(ev.get("group_qq") or ev.get("source_group_qq"))
+def _extract_group_uin(ev:dict)->int:
+    return _safe_int(ev.get("group_uin") or ev.get("source_group_uin"))
 
 def _extract_user_qq(ev:dict)->int:
-    return _safe_int(ev.get("sender_qq") or ev.get("trigger_qq"))
+    return _safe_int(ev.get("sender_uin") or ev.get("trigger_uin"))
 
 def _extract_msg_random(ev:dict)->int:
     return _safe_int(ev.get("message_random") or ev.get("random"))
@@ -345,64 +345,64 @@ def generate_fragmented_captcha_gif(code:str)->tuple[bytes,dict]:
     frames[0].save(out, format="GIF", save_all=True, append_images=frames[1:], duration=GIF_FRAME_DURATION_MS, loop=0, disposal=2, optimize=False)
     return out.getvalue(), {"code": code, "slice_count": SLICE_COUNT, "real_slice_count_per_frame": REAL_SLICE_COUNT_PER_FRAME, "canvas_width": canvas_width, "canvas_height": canvas_height}
 
-def _send_captcha_message(this_qq:int, group_qq:int, user_qq:int, code:str, title:str):
+def _send_captcha_message(my_uin:int, group_uin:int, user_qq:int, code:str, title:str):
     gif_bytes, params = generate_fragmented_captcha_gif(code)
-    image_code = api.upload_group_image(this_qq, group_qq, False, gif_bytes)
+    image_code = api.upload_group_image(my_uin, group_uin, False, gif_bytes)
     msg = "\n".join([f"{_message_mention(user_qq)} {title}", "请发送图片中看到的验证码完成验证。", image_code])
-    api.send_group_message(this_qq, group_qq, msg, False)
+    api.send_group_message(my_uin, group_uin, msg, False)
 
 def _open_settings_in_notepad():
     _load_settings()
     subprocess.Popen(["notepad.exe", str(_settings_path())])
 
 def _handle_toggle_command(ev:dict, message:str)->bool:
-    this_qq, group_qq, sender_qq = _extract_this_qq(ev), _extract_group_qq(ev), _extract_user_qq(ev)
+    my_uin, group_uin, sender_uin = _extract_my_uin(ev), _extract_group_uin(ev), _extract_user_qq(ev)
     enable_cmd, disable_cmd = _get_toggle_commands()
     if message not in {enable_cmd, disable_cmd}: return False
-    if not _is_admin(sender_qq):
-        api.send_group_message(this_qq, group_qq, f"{_message_mention(sender_qq)} 你不是人机验证管理员。", False)
+    if not _is_admin(sender_uin):
+        api.send_group_message(my_uin, group_uin, f"{_message_mention(sender_uin)} 你不是人机验证管理员。", False)
         return True
-    _set_group_enabled(this_qq, group_qq, message == enable_cmd)
-    api.send_group_message(this_qq, group_qq, f"[人机验证] 当前群验证已{'开启' if message == enable_cmd else '关闭'}。", False)
+    _set_group_enabled(my_uin, group_uin, message == enable_cmd)
+    api.send_group_message(my_uin, group_uin, f"[人机验证] 当前群验证已{'开启' if message == enable_cmd else '关闭'}。", False)
     return True
 
 def _handle_test_command(ev:dict)->bool:
     if (ev.get("message") or "").strip() != TRIGGER_MESSAGE: return False
-    _send_captcha_message(_extract_this_qq(ev), _extract_group_qq(ev), _extract_user_qq(ev), _generate_code(), "动态碎帧验证码测试")
+    _send_captcha_message(_extract_my_uin(ev), _extract_group_uin(ev), _extract_user_qq(ev), _generate_code(), "动态碎帧验证码测试")
     return True
 
 def _handle_pending_member_message(ev:dict)->bool:
-    this_qq, group_qq, sender_qq = _extract_this_qq(ev), _extract_group_qq(ev), _extract_user_qq(ev)
-    pending = _get_pending_code(this_qq, group_qq, sender_qq)
+    my_uin, group_uin, sender_uin = _extract_my_uin(ev), _extract_group_uin(ev), _extract_user_qq(ev)
+    pending = _get_pending_code(my_uin, group_uin, sender_uin)
     if not pending: return False
     content = (ev.get("message") or "").strip()
     if content == pending:
-        _clear_pending_code(this_qq, group_qq, sender_qq)
-        api.send_group_message(this_qq, group_qq, f"{_message_mention(sender_qq)} 人机验证通过，欢迎入群。", False)
+        _clear_pending_code(my_uin, group_uin, sender_uin)
+        api.send_group_message(my_uin, group_uin, f"{_message_mention(sender_uin)} 人机验证通过，欢迎入群。", False)
         return True
     new_code = _generate_code()
-    _set_pending_code(this_qq, group_qq, sender_qq, new_code)
+    _set_pending_code(my_uin, group_uin, sender_uin, new_code)
     _log(f"ev={ev}")
     rnd, req = _extract_msg_random(ev), _extract_msg_req(ev)
-    api.mute_group_member(this_qq, group_qq, sender_qq, 60)
-    if rnd and req: _log(f"撤回消息 rnd={rnd} req={req} 结果{api.recall_group_message(this_qq, group_qq, rnd, req)}" );
-    _send_captcha_message(this_qq, group_qq, sender_qq, new_code, "验证码错误，已为你刷新新的验证码")
+    api.mute_group_member(my_uin, group_uin, sender_uin, 60)
+    if rnd and req: _log(f"撤回消息 rnd={rnd} req={req} 结果{api.recall_group_message(my_uin, group_uin, rnd, req)}" );
+    _send_captcha_message(my_uin, group_uin, sender_uin, new_code, "验证码错误，已为你刷新新的验证码")
     return True
 
 def _handle_join_event(ev:dict)->bool:
     _log(f"检测到事件 event={ev}")
     event_type = _safe_int(ev.get("event_type"))
     if event_type not in JOIN_EVENT_TYPES: return False
-    this_qq, group_qq, user_qq = _extract_this_qq(ev), _extract_group_qq(ev), _extract_user_qq(ev)
-    if not this_qq or not group_qq or not user_qq or not _is_group_enabled(this_qq, group_qq): return False
-    if _get_pending_code(this_qq, group_qq, user_qq):
-        _log(f"跳过重复入群验证 event_type={event_type} group={group_qq} qq={user_qq}")
+    my_uin, group_uin, user_qq = _extract_my_uin(ev), _extract_group_uin(ev), _extract_user_qq(ev)
+    if not my_uin or not group_uin or not user_qq or not _is_group_enabled(my_uin, group_uin): return False
+    if _get_pending_code(my_uin, group_uin, user_qq):
+        _log(f"跳过重复入群验证 event_type={event_type} group={group_uin} qq={user_qq}")
         return True
     code = _generate_code()
-    _set_pending_code(this_qq, group_qq, user_qq, code)
-    _send_captcha_message(this_qq, group_qq, user_qq, code, "欢迎入群，请先完成验证")
-    #api.mute_group_member(this_qq, group_qq, user_qq, 60)
-    _log(f"检测到入群 event_type={event_type} group={group_qq} qq={user_qq} operate_qq={_safe_int(ev.get('operate_qq'))} sub_type={_safe_int(ev.get('event_sub_type'))}")
+    _set_pending_code(my_uin, group_uin, user_qq, code)
+    _send_captcha_message(my_uin, group_uin, user_qq, code, "欢迎入群，请先完成验证")
+    #api.mute_group_member(my_uin, group_uin, user_qq, 60)
+    _log(f"检测到入群 event_type={event_type} group={group_uin} qq={user_qq} operate_uin={_safe_int(ev.get('operate_uin'))} sub_type={_safe_int(ev.get('event_sub_type'))}")
     return True
 
 def apprun(ctx:dict)->dict:

@@ -796,11 +796,11 @@ static std::wstring Usc2AnsiPtrToW(const char* s)
 
 static void ApplyReplyVariables(std::wstring& reply, const xlz::GroupMessageEvent& ev, const std::wstring& messageContent)
 {
-	ReplaceAll(reply, L"{thisQQ}", std::to_wstring(static_cast<long long>(ev.ThisQQ)));
-	ReplaceAll(reply, L"{groupQQ}", std::to_wstring(static_cast<long long>(ev.MessageGroupQQ)));
-	ReplaceAll(reply, L"{senderQQ}", std::to_wstring(static_cast<long long>(ev.SenderQQ)));
-	ReplaceAll(reply, L"{senderNick}", Usc2AnsiPtrToW(ev.SenderNickname));
-	ReplaceAll(reply, L"{groupName}", Usc2AnsiPtrToW(ev.SourceGroupName));
+	ReplaceAll(reply, L"{thisQQ}", std::to_wstring(static_cast<long long>(ev.MyUin)));
+	ReplaceAll(reply, L"{groupQQ}", std::to_wstring(static_cast<long long>(ev.MessageGroupUin)));
+	ReplaceAll(reply, L"{senderQQ}", std::to_wstring(static_cast<long long>(ev.SenderUin)));
+	ReplaceAll(reply, L"{senderNick}", Usc2AnsiPtrToW(ev.Card));
+	ReplaceAll(reply, L"{groupName}", Usc2AnsiPtrToW(ev.GroupName));
 	ReplaceAll(reply, L"{message}", messageContent);
 	ReplaceAll(reply, L"{nl}", L"\n");
 }
@@ -1547,7 +1547,7 @@ static int XLZ_CALL HandleGroupMessage(const xlz::GroupMessageEvent* ev)
 	{
 		return 0;
 	}
-	if (ev->SenderQQ == ev->ThisQQ) {
+	if (ev->SenderUin == ev->MyUin) {
 		return 0; // 忽略自己发送的消息，防止死循环
 	}
 	Config cfg;
@@ -1582,7 +1582,7 @@ static int XLZ_CALL HandleGroupMessage(const xlz::GroupMessageEvent* ev)
 			reply = ApplyRegexGroups(reply, m);
 		}
 		ApplyReplyVariables(reply, *ev, content);
-		xlz::SendGroupMessage(g_sdk, ev->ThisQQ, ev->MessageGroupQQ, WideToUtf8(reply).c_str(), false);
+		xlz::SendGroupMessage(g_sdk, ev->MyUin, ev->MessageGroupUin, WideToUtf8(reply).c_str(), false);
 		break;
 	}
 

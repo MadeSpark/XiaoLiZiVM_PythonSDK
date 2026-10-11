@@ -12,14 +12,22 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <deque>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
-#include <cstdint>
-#include <cstring>
-#include <cstdio>
-#include <mutex>
+
+// 字段命名见 开发SDK/SDK字段命名规范.md
+// 线程模型：本桥接层对「自由线程」友好——临时字符串池/返回缓冲均为 thread_local，
+//           事件回调默认不互相串行；可选异步派发（XLZ_Bridge_SetAsync）把事件排队到工作线程执行。
 
 static bool g_debugEnabled = false; // 调试开关：默认关闭；需要时手动改为 true
 static bool g_debugLogCleared = false;
@@ -57,9 +65,28 @@ static std::string g_dllDirUtf8;
 static std::string g_pyPayloadDirUtf8;
 static std::string g_pyRuntimeDirUtf8;
 static std::string g_pyModuleName;
-static std::string g_lastUtf8Ret;
-static std::vector<std::string> g_tempUsc2AnsiPool;
-static std::mutex g_pyCallMutex;
+
+// ── 线程安全：临时 usc2/ansi 字符串池与最近一次返回缓冲都按线程隔离 ──
+// 用 deque 保证 push_back 后已有元素的地址稳定（vector 扩容会让 SSO 短串指针失效）。
+static thread_local std::deque<std::string> g_tempUsc2AnsiPool;
+static thread_local std::string g_lastUtf8Ret;
+
+// 只保护「未就绪时从状态文件恢复」以及模块卸载这类稀有的状态变更
+static std::mutex g_stateMutex;
+
+// ── 可选异步派发（工作线程 + 队列） ──
+struct AsyncJob
+{
+	std::string func;
+	std::string dictLiteral;
+};
+
+static std::mutex g_asyncMutex;
+static std::condition_variable g_asyncCv;
+static std::deque<AsyncJob> g_asyncQueue;
+static std::thread g_asyncWorker;
+static std::atomic<bool> g_asyncEnabled{false};
+static std::atomic<bool> g_asyncStop{false};
 
 using XLZ_PyInitialize_t = int(__stdcall*)();
 using PyRun_SimpleString_t = int(*)(const char*);
@@ -264,6 +291,7 @@ static constexpr uint8_t kMagic[8]={'X','L','Z','P','Y','Z','I','P'};
 struct PayloadFooter{uint32_t version;uint64_t offset;uint64_t size;uint32_t reserved;};
 
 static bool RunPy(const std::string& code);
+static int PyCallEventWithReturn(const std::string& func, const std::string& dictLiteral);
 
 static bool ReadPayloadFooter(const std::string& dll,PayloadFooter& f)
 {
@@ -413,9 +441,12 @@ static bool InitPythonBridge()
 	g_PyGILState_Check=(PyGILState_Check_t)::GetProcAddress(hPy,"PyGILState_Check");
 	g_PyEval_SaveThread=(PyEval_SaveThread_t)::GetProcAddress(hPy,"PyEval_SaveThread");
 	const bool ok = g_PyRun_SimpleString!=nullptr && g_PyGILState_Ensure!=nullptr && g_PyGILState_Release!=nullptr;
-	// 只在“当前线程确实持有GIL”时才允许 SaveThread，避免多插件重复加载时误调用导致初始化失败
-	if(ok && g_PyEval_SaveThread && g_PyGILState_Check && pyInitRet > 0 && g_PyGILState_Check()){
+	// 自由线程关键：初始化后必须释放 GIL，否则只有初始化线程能跑 Python，
+	// 其他线程（含插件自建线程、异步工作线程）会永远阻塞在 PyGILState_Ensure。
+	// xlz_pyruntime 已在 Py_Initialize 后释放；这里再兜底一次（幂等：仅当本线程确实持有 GIL 时才释放）。
+	if(ok && g_PyEval_SaveThread && g_PyGILState_Check && g_PyGILState_Check()){
 		g_PyEval_SaveThread();
+		ForceLog("InitPythonBridge: released GIL on init thread (free-threading enabled)");
 	}
 	DebugLog(std::string("InitPythonBridge done ok=") + (ok?"1":"0"));
 	return ok;
@@ -465,9 +496,9 @@ XLZ_API void XLZ_CALL XLZ_Bridge_OutputLog(const char* m)
 	xlz::OutputLog(g_sdk,m?m:"");
 }
 
-XLZ_API const char* XLZ_CALL XLZ_Bridge_SendGroupMessage(long long tqq,long long gqq,const char* msg,int anon)
+XLZ_API const char* XLZ_CALL XLZ_Bridge_SendGroupMessage(long long myUin,long long groupUin,const char* messageUtf8,int anonymous)
 {
-	g_lastUtf8Ret=xlz::SendGroupMessage(g_sdk,(int64_t)tqq,(int64_t)gqq,msg?msg:"",anon!=0);
+	g_lastUtf8Ret=xlz::SendGroupMessage(g_sdk,(int64_t)myUin,(int64_t)groupUin,messageUtf8?messageUtf8:"",anonymous!=0);
 	return g_lastUtf8Ret.c_str();
 }
 
@@ -491,14 +522,21 @@ XLZ_API void XLZ_CALL XLZ_Bridge_CallApiVoid(const char* api,const char* args)
 }
 
 // 专用图片上传接口：在C++层持有图片数据，避免Python GC问题
-XLZ_API const char* XLZ_CALL XLZ_Bridge_UploadGroupImage(long long thisQq, long long groupQq, int isFlash, const void* picData, int picSize)
+XLZ_API const char* XLZ_CALL XLZ_Bridge_UploadGroupImage(long long myUin, long long groupUin, int isFlash, const void* picData, int picSize)
 {
-	DebugLog(std::string("XLZ_Bridge_UploadGroupImage: thisQq=")+std::to_string(thisQq)+", groupQq="+std::to_string(groupQq)+", size="+std::to_string(picSize));
+	DebugLog(std::string("XLZ_Bridge_UploadGroupImage: myUin=")+std::to_string(myUin)+", groupUin="+std::to_string(groupUin)+", size="+std::to_string(picSize));
 	// 在C++层复制一份数据，确保框架读取时数据有效
 	std::vector<char> buf(static_cast<const char*>(picData), static_cast<const char*>(picData)+picSize);
-	g_lastUtf8Ret = xlz::UploadGroupImage(g_sdk, thisQq, groupQq, isFlash!=0, buf.data(), (uint32_t)picSize);
+	g_lastUtf8Ret = xlz::UploadGroupImage(g_sdk, myUin, groupUin, isFlash!=0, buf.data(), (uint32_t)picSize);
 	DebugLog(std::string("XLZ_Bridge_UploadGroupImage: ret=")+g_lastUtf8Ret);
 	return g_lastUtf8Ret.c_str();
+}
+
+// 开关异步事件派发：1=事件排队到工作线程执行（回调立即返回 0，不再拦截后续插件）
+XLZ_API void XLZ_CALL XLZ_Bridge_SetAsync(int enabled)
+{
+	g_asyncEnabled.store(enabled!=0);
+	ForceLog(std::string("XLZ_Bridge_SetAsync: ")+(enabled!=0?"1":"0"));
 }
 
 // ===== 事件转发（空壳，全部转 Python）=====
@@ -514,46 +552,49 @@ static int PyCallEventWithReturn(const std::string& func, const std::string& dic
 {
 	if(g_pyPayloadDirUtf8.empty() || g_pyModuleName.empty()){
 		ForceLog(std::string("PyCallEventWithReturn: not ready, func=")+func);
-		// 用当前DLL自身路径定位状态文件，不依赖可能为空的全局变量
-		wchar_t selfW[MAX_PATH]={};
-		HMODULE hSelf=nullptr;
-		::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,(LPCWSTR)&PyCallEventWithReturn,&hSelf);
-		if(hSelf) ::GetModuleFileNameW(hSelf,selfW,MAX_PATH);
-		const std::string selfPath = WU8(selfW);
-		const std::string selfDir = selfPath.substr(0, selfPath.find_last_of("\\/"));
-		ForceLog(std::string("PyCallEventWithReturn: self dll=")+selfPath);
-		// 扫描 selfDir 下所有 .xlz_pystate_*.txt 文件
-		std::string foundState;
-		{
-			const std::wstring pat = U8W(selfDir) + L"\\.xlz_pystate_*.txt";
-			WIN32_FIND_DATAW fd{};
-			HANDLE h=::FindFirstFileW(pat.c_str(),&fd);
-			if(h!=INVALID_HANDLE_VALUE){
-				foundState = selfDir + "\\" + WU8(fd.cFileName);
-				::FindClose(h);
-			}
-		}
-		ForceLog(std::string("PyCallEventWithReturn: state file=")+foundState);
-		if(!foundState.empty()){
-			std::ifstream sf(U8W(foundState).c_str());
-			if(sf){
-				std::string payloadDir, moduleName, apiData, pluginKey;
-				std::getline(sf, payloadDir);
-				std::getline(sf, moduleName);
-				std::getline(sf, apiData);
-				std::getline(sf, pluginKey);
-				ForceLog(std::string("PyCallEventWithReturn: state payloadDir=")+payloadDir+", module="+moduleName);
-				if(!payloadDir.empty() && !moduleName.empty()){
-					g_pyPayloadDirUtf8 = payloadDir;
-					g_pyModuleName = moduleName;
-					g_dllPathUtf8 = selfPath;
-					g_dllDirUtf8 = selfDir;
-					if(!apiData.empty()) g_sdk.Initialize(apiData.c_str(), pluginKey.c_str());
-					if(!InitPythonBridge()) { ForceLog("PyCallEventWithReturn: restore InitPythonBridge failed"); return 0; }
-					ForceLog("PyCallEventWithReturn: restored state from file ok");
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		if(g_pyPayloadDirUtf8.empty() || g_pyModuleName.empty()){
+			// 用当前DLL自身路径定位状态文件，不依赖可能为空的全局变量
+			wchar_t selfW[MAX_PATH]={};
+			HMODULE hSelf=nullptr;
+			::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,(LPCWSTR)&PyCallEventWithReturn,&hSelf);
+			if(hSelf) ::GetModuleFileNameW(hSelf,selfW,MAX_PATH);
+			const std::string selfPath = WU8(selfW);
+			const std::string selfDir = selfPath.substr(0, selfPath.find_last_of("\\/"));
+			ForceLog(std::string("PyCallEventWithReturn: self dll=")+selfPath);
+			// 扫描 selfDir 下所有 .xlz_pystate_*.txt 文件
+			std::string foundState;
+			{
+				const std::wstring pat = U8W(selfDir) + L"\\.xlz_pystate_*.txt";
+				WIN32_FIND_DATAW fd{};
+				HANDLE h=::FindFirstFileW(pat.c_str(),&fd);
+				if(h!=INVALID_HANDLE_VALUE){
+					foundState = selfDir + "\\" + WU8(fd.cFileName);
+					::FindClose(h);
 				}
-			} else {
-				ForceLog("PyCallEventWithReturn: state file open failed");
+			}
+			ForceLog(std::string("PyCallEventWithReturn: state file=")+foundState);
+			if(!foundState.empty()){
+				std::ifstream sf(U8W(foundState).c_str());
+				if(sf){
+					std::string payloadDir, moduleName, apiData, pluginKey;
+					std::getline(sf, payloadDir);
+					std::getline(sf, moduleName);
+					std::getline(sf, apiData);
+					std::getline(sf, pluginKey);
+					ForceLog(std::string("PyCallEventWithReturn: state payloadDir=")+payloadDir+", module="+moduleName);
+					if(!payloadDir.empty() && !moduleName.empty()){
+						g_pyPayloadDirUtf8 = payloadDir;
+						g_pyModuleName = moduleName;
+						g_dllPathUtf8 = selfPath;
+						g_dllDirUtf8 = selfDir;
+						if(!apiData.empty()) g_sdk.Initialize(apiData.c_str(), pluginKey.c_str());
+						if(!InitPythonBridge()) { ForceLog("PyCallEventWithReturn: restore InitPythonBridge failed"); return 0; }
+						ForceLog("PyCallEventWithReturn: restored state from file ok");
+					}
+				} else {
+					ForceLog("PyCallEventWithReturn: state file open failed");
+				}
 			}
 		}
 		if(g_pyPayloadDirUtf8.empty() || g_pyModuleName.empty()){
@@ -561,9 +602,9 @@ static int PyCallEventWithReturn(const std::string& func, const std::string& dic
 			return 0;
 		}
 	}
-	std::lock_guard<std::mutex> lock(g_pyCallMutex);
 	ForceLog(std::string("PyCallEventWithReturn: executing func=")+func+", PyRun="+(g_PyRun_SimpleString?"ok":"NULL"));
-	const std::string retFile = g_pyPayloadDirUtf8 + "\\_xlz_ret_.txt";
+	// 返回值文件按线程隔离，避免并发事件互相覆盖
+	const std::string retFile = g_pyPayloadDirUtf8 + "\\_xlz_ret_" + std::to_string(::GetCurrentThreadId()) + ".txt";
 	std::ostringstream py;
 	py << "import sys, os, importlib.util\n";
 	py << "def _xlz_call_" << EscapePy(g_pyModuleName) << "():\n";
@@ -612,72 +653,125 @@ static void PyCallEvent(const std::string& func, const std::string& dictLiteral)
 	PyCallEventWithReturn(func, dictLiteral);
 }
 
+static void AsyncWorkerLoop()
+{
+	ForceLog("AsyncWorkerLoop: started");
+	for(;;){
+		AsyncJob job;
+		{
+			std::unique_lock<std::mutex> lk(g_asyncMutex);
+			g_asyncCv.wait(lk, []{ return g_asyncStop.load() || !g_asyncQueue.empty(); });
+			if(g_asyncStop.load() && g_asyncQueue.empty()) break;
+			job = std::move(g_asyncQueue.front());
+			g_asyncQueue.pop_front();
+		}
+		PyCallEventWithReturn(job.func, job.dictLiteral);
+	}
+	ForceLog("AsyncWorkerLoop: stopped");
+}
+
+static void EnsureAsyncWorker()
+{
+	if(!g_asyncWorker.joinable()){
+		g_asyncStop.store(false);
+		g_asyncWorker = std::thread(AsyncWorkerLoop);
+	}
+}
+
+static void StopAsyncWorker()
+{
+	// 若在异步工作线程内调用（例如 Python 线程触发了卸载），不能 join 自己
+	if(!g_asyncWorker.joinable()) return;
+	if(g_asyncWorker.get_id() == std::this_thread::get_id()) return;
+	g_asyncStop.store(true);
+	g_asyncCv.notify_all();
+	g_asyncWorker.join();
+	{
+		std::lock_guard<std::mutex> lk(g_asyncMutex);
+		g_asyncQueue.clear();
+	}
+}
+
+// 事件派发入口：异步开启时入队并立即返回 0；否则同步执行并返回 handle 结果
+static int DispatchEvent(const std::string& func, const std::string& dictLiteral)
+{
+	if(g_asyncEnabled.load()){
+		EnsureAsyncWorker();
+		{
+			std::lock_guard<std::mutex> lk(g_asyncMutex);
+			g_asyncQueue.push_back(AsyncJob{func, dictLiteral});
+		}
+		g_asyncCv.notify_one();
+		return 0;
+	}
+	return PyCallEventWithReturn(func, dictLiteral);
+}
+
 XLZ_API int XLZ_CALL RecviceGroupMesg(void* data)
 {
 	const auto* ev=reinterpret_cast<const xlz::GroupMessageEvent*>(data);
 	if(!ev){ DebugLog("RecviceGroupMesg: null data"); return 0; }
 	const std::string msg = xlz::GetGroupMessageContentUtf8(*ev);
-	DebugLog(std::string("RecviceGroupMesg: group=")+std::to_string((long long)ev->MessageGroupQQ)+", sender="+std::to_string((long long)ev->SenderQQ)+", msg="+msg);
-	DebugLog("RecviceGroupMesg: before PyCallEvent");
+	DebugLog(std::string("RecviceGroupMesg: group=")+std::to_string((long long)ev->MessageGroupUin)+", sender="+std::to_string((long long)ev->SenderUin)+", msg="+msg);
 	std::ostringstream d;
-	d << "{'this_qq':" << ev->ThisQQ
-	  << ",'group_qq':" << ev->MessageGroupQQ
-	  << ",'sender_qq':" << ev->SenderQQ
+	d << "{'my_uin':" << ev->MyUin
+	  << ",'group_uin':" << ev->MessageGroupUin
+	  << ",'sender_uin':" << ev->SenderUin
 	  << ",'message_req':" << ev->MessageReq
 	  << ",'message_receive_time':" << ev->MessageReceiveTime
 	  << ",'message_send_time':" << ev->MessageSendTime
 	  << ",'message_random':" << ev->MessageRandom
 	  << ",'message_clip':" << ev->MessageClip
 	  << ",'message_clip_count':" << ev->MessageClipCount
-	  << ",'message_clip_id':" << ev->MessageClipID
+	  << ",'message_clip_id':" << ev->MessageClipId
 	  << ",'message_type':" << ev->MessageType
-	  << ",'bubble_id':" << ev->BubbleID
+	  << ",'bubble_id':" << ev->BubbleId
 	  << ",'group_chat_level':" << ev->GroupChatLevel
-	  << ",'pendant_id':" << ev->PendantID
+	  << ",'pendant_id':" << ev->PendantId
 	  << ",'anonymous_id':" << ev->AnonymousId
 	  << ",'font_id':" << ev->FontId
 	  << ",'message':'" << EscapePy(msg) << "'";
-	d << ",'group_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SourceGroupName?ev->SourceGroupName:"")) << "'";
-	d << ",'sender_nick':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SenderNickname?ev->SenderNickname:"")) << "'";
+	d << ",'group_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->GroupName?ev->GroupName:"")) << "'";
+	d << ",'card':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->Card?ev->Card:"")) << "'";
 	d << ",'sender_title':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SenderTitle?ev->SenderTitle:"")) << "'";
-	d << ",'reply_message':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->ReplyMessageContent?ev->ReplyMessageContent:"")) << "'";
+	d << ",'reply_message':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->ReplyMessage?ev->ReplyMessage:"")) << "'";
 	d << ",'anonymous_nickname':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->AnonymousNickname?ev->AnonymousNickname:"")) << "'";
 	d << ",'reserved_parameters':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->ReservedParameters?ev->ReservedParameters:"")) << "'";
 	d << "}";
-	return PyCallEventWithReturn("on_group_message",d.str());
+	return DispatchEvent("on_group_message", d.str());
 }
 
 XLZ_API int XLZ_CALL RecvicePrivateMsg(void* data)
 {
 	const auto* ev=reinterpret_cast<const xlz::PrivateMessageEvent*>(data);
 	if(!ev){ DebugLog("RecvicePrivateMsg: null data"); return 0; }
-	DebugLog(std::string("RecvicePrivateMsg: sender=")+std::to_string((long long)ev->SenderQQ));
+	DebugLog(std::string("RecvicePrivateMsg: sender=")+std::to_string((long long)ev->SenderUin));
 	std::ostringstream d;
-	d << "{'this_qq':" << ev->ThisQQ
-	  << ",'sender_qq':" << ev->SenderQQ
+	d << "{'my_uin':" << ev->MyUin
+	  << ",'sender_uin':" << ev->SenderUin
 	  << ",'message_req':" << ev->MessageReq
 	  << ",'message_seq':" << ev->MessageSeq
 	  << ",'message_receive_time':" << ev->MessageReceiveTime
-	  << ",'message_group_qq':" << ev->MessageGroupQQ
+	  << ",'message_group_uin':" << ev->MessageGroupUin
 	  << ",'message_send_time':" << ev->MessageSendTime
 	  << ",'message_random':" << ev->MessageRandom
 	  << ",'message_clip':" << ev->MessageClip
 	  << ",'message_clip_count':" << ev->MessageClipCount
-	  << ",'message_clip_id':" << ev->MessageClipID
-	  << ",'bubble_id':" << ev->BubbleID
+	  << ",'message_clip_id':" << ev->MessageClipId
+	  << ",'bubble_id':" << ev->BubbleId
 	  << ",'message_type':" << ev->MessageType
 	  << ",'message_sub_type':" << ev->MessageSubType
 	  << ",'message_sub_temporary_type':" << ev->MessageSubTemporaryType
 	  << ",'red_envelope_type':" << ev->RedEnvelopeType
-	  << ",'source_event_qq':" << ev->SourceEventQQ
+	  << ",'source_event_uin':" << ev->SourceEventUin
 	  << ",'msg_group_id':" << ev->MsgGroupId
 	  << ",'message':'" << EscapePy(xlz::GetPrivateMessageContentUtf8(*ev)) << "'";
-	d << ",'source_event_qq_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SourceEventQQName?ev->SourceEventQQName:"")) << "'";
-	d << ",'file_id':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->FileID?ev->FileID:"")) << "'";
-	d << ",'file_md5':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->FileMD5?ev->FileMD5:"")) << "'";
+	d << ",'source_event_uin_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SourceEventUinName?ev->SourceEventUinName:"")) << "'";
+	d << ",'file_id':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->FileId?ev->FileId:"")) << "'";
+	d << ",'file_md5':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->FileMd5?ev->FileMd5:"")) << "'";
 	d << ",'file_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->FileName?ev->FileName:"")) << "'";
 	d << "}";
-	return PyCallEventWithReturn("on_private_message",d.str());
+	return DispatchEvent("on_private_message", d.str());
 }
 
 XLZ_API int XLZ_CALL RecviceEventCallBack(void* data)
@@ -685,27 +779,28 @@ XLZ_API int XLZ_CALL RecviceEventCallBack(void* data)
 	const auto* ev=reinterpret_cast<const xlz::EventTypeBase*>(data);
 	if(!ev) return 0;
 	std::ostringstream d;
-	d << "{'this_qq':" << ev->ThisQQ
+	d << "{'my_uin':" << ev->MyUin
 	  << ",'event_type':" << ev->EventType
 	  << ",'event_sub_type':" << ev->EventSubType
-	  << ",'trigger_qq':" << ev->TriggerQQ
-	  << ",'source_group_qq':" << ev->SourceGroupQQ
-	  << ",'operate_qq':" << ev->OperateQQ
+	  << ",'trigger_uin':" << ev->TriggerUin
+	  << ",'source_group_uin':" << ev->SourceGroupUin
+	  << ",'operate_uin':" << ev->OperateUin
 	  << ",'message_seq':" << ev->MessageSeq
 	  << ",'message_time':" << ev->MessageTime
 	  << ",'message':'" << EscapePy(xlz::GetEventMessageContentUtf8(*ev)) << "'";
-	d << ",'source_group_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->SourceGroupName?ev->SourceGroupName:"")) << "'";
-	d << ",'operate_qq_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->OperateQQName?ev->OperateQQName:"")) << "'";
-	d << ",'trigger_qq_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->TriggerQQName?ev->TriggerQQName:"")) << "'";
+	d << ",'group_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->GroupName?ev->GroupName:"")) << "'";
+	d << ",'operate_uin_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->OperateUinName?ev->OperateUinName:"")) << "'";
+	d << ",'trigger_uin_name':'" << EscapePy(xlz::Usc2AnsiToUtf8(ev->TriggerUinName?ev->TriggerUinName:"")) << "'";
 	d << "}";
-	return PyCallEventWithReturn("on_event_message",d.str());
+	return DispatchEvent("on_event_message", d.str());
 }
 
 XLZ_API int XLZ_CALL RotbotAppEnable(){return PyCallEventWithReturn("on_enable","{}");}
 XLZ_API int XLZ_CALL AppSetting(){PyCallEvent("on_setting","{}");return 0;}
 XLZ_API void XLZ_CALL AppUninstall(){
 	PyCallEvent("on_uninstall","{}");
-	std::lock_guard<std::mutex> lock(g_pyCallMutex);
+	StopAsyncWorker();
+	std::lock_guard<std::mutex> lock(g_stateMutex);
 	if(!g_pyModuleName.empty() && g_PyRun_SimpleString){
 		std::ostringstream py;
 		py << "import sys\n";
@@ -717,7 +812,7 @@ XLZ_API void XLZ_CALL AppUninstall(){
 	g_pyModuleName.clear();
 	g_pyPayloadDirUtf8.clear();
 }
-XLZ_API void XLZ_CALL AppDisabled(){PyCallEvent("on_disable","{}");}
+XLZ_API void XLZ_CALL AppDisabled(){PyCallEvent("on_disable","{}");StopAsyncWorker();}
 XLZ_API void XLZ_CALL GetSMSVerificationCode(long long qq,void* phone){(void)qq;(void)phone;}
 XLZ_API void XLZ_CALL SliderRecognition(long long qq,void* url){(void)qq;(void)url;}
 

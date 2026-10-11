@@ -129,11 +129,11 @@ SDK 内部对应：
 #include "xlz_api_wrappers.h"
 
 xlz::GroupListBlock blocks[1]{};
-const int count = xlz::GetGroupList(g_sdk, thisQq, blocks);
+const int count = xlz::GetGroupList(g_sdk, myUin, blocks);
 for (int i = 0; i < count && i < blocks[0].Amount; ++i)
 {
     const xlz::GroupInfo* info = xlz::GetGroupInfoPtr(blocks[0], i);
-    // info->GroupQQ / info->GroupName ...
+    // info->GroupUin / info->GroupName ...
 }
 ```
 
@@ -141,50 +141,114 @@ for (int i = 0; i < count && i < blocks[0].Amount; ++i)
 
 说明：
 
-- `thisQq` 对应易语言的“框架QQ”
+- `myUin` 对应易语言的“框架QQ”
 - 除特别说明外，所有 `const char* xxxUtf8` 均要求传入 UTF-8 字符串
 - 以下函数都在 [xlz_api_wrappers.h](include/xlz_api_wrappers.h) 中
 
 | 易语言 API | C++ 封装函数 | 返回值 | 关键参数（按易语言顺序） |
 | --- | --- | --- | --- |
 | 输出日志 | `OutputLog` | void | `messageUtf8, textColor, backgroundColor` |
-| 发送好友消息 | `SendPrivateMessage` | std::string | `thisQq, friendQq, messageUtf8, messageRandom*, messageReq*` |
-| 发送群消息 | `SendGroupMessage` | std::string | `thisQq, groupQq, messageUtf8, anonymous` |
+| 发送好友消息 | `SendPrivateMessage` | std::string | `myUin, friendUin, messageUtf8, messageRandom*, messageReq*` |
+| 发送群消息 | `SendGroupMessage` | std::string | `myUin, groupUin, messageUtf8, anonymous` |
 | 取框架QQ | `GetFrameworkQQ` | std::string | （无） |
-| 取群列表 | `GetGroupList` | int32_t | `thisQq, blocks*` |
-| 取群成员列表 | `GetGroupMemberList` | int32_t | `thisQq, groupQq, blocks*` |
-| 发送群临时消息 | `SendGroupTemporaryMessage` | std::string | `thisQq, groupId, otherQq, contentUtf8, outRandom*, outReq*` |
-| 发送群json消息 | `SendGroupJsonMessage` | std::string | `thisQq, groupQq, jsonUtf8, anonymous` |
-| 上传好友图片 | `UploadFriendImage` | std::string | `thisQq, friendQq, isFlash, picBytes, picSize, wide, high, cartoon, previewTextUtf8` |
-| 上传群图片 | `UploadGroupImage` | std::string | `thisQq, groupQq, isFlash, picBytes, picSize, wide, high, cartoon, previewTextUtf8` |
-| 上传好友语音 | `UploadFriendAudio` | std::string | `thisQq, friendQq, audioType, audioTextUtf8, audioBytes, audioSize, timeSeconds` |
-| 上传群语音 | `UploadGroupAudio` | std::string | `thisQq, groupQq, audioType, audioTextUtf8, audioBytes, audioSize, timeSeconds` |
-| 上传群文件 | `UploadGroupFile` | std::string | `thisQq, groupQq, filePathUtf8, folderUtf8` |
-| 取管理层列表 | `GetAdministratorList` | std::string | `thisQq, groupQq` |
-| 取群名片 | `GetGroupCard` | std::string | `thisQq, groupQq, memberQq` |
-| 设置群名片 | `SetGroupCard` | std::string | `thisQq, groupQq, memberQq, newCardUtf8` |
-| 取昵称_从缓存 | `GetNicknameFromCache` | std::string | `otherQqTextUtf8` |
-| 强制取昵称 | `GetNicknameForce` | std::string | `thisQq, otherQqTextUtf8` |
-| 取好友文件下载地址 | `GetFriendFileDownloadUrl` | std::string | `thisQq, fileIdUtf8, fileNameUtf8` |
-| 取图片下载地址 | `GetImageDownloadUrl` | std::string | `imageCodeUtf8, thisQq, groupQq` |
-| 撤回消息_群聊 | `RecallGroupMessage` | bool | `thisQq, groupQq, messageRandom, messageReq` |
-| 禁言群成员 | `MuteGroupMember` | bool | `thisQq, groupQq, memberQq, durationSeconds` |
-| 删除群成员 | `RemoveGroupMember` | bool | `thisQq, groupQq, memberQq, refuseNextJoin` |
-| 处理好友验证事件 | `HandleFriendVerificationEvent` | void | `thisQq, triggerQq, messageSeq, operateType` |
-| 处理群验证事件 | `HandleGroupVerificationEvent` | void | `thisQq, sourceGroupQq, triggerQq, messageSeq, operateType, eventType, refuseReasonUtf8` |
-| 全员禁言 | `MuteAll` | bool | `thisQq, groupQq, enabled` |
-| QQ点赞 | `QQLike` | std::string | `thisQq, otherQq` |
-| 群聊打卡 | `GroupCheckIn` | std::string | `thisQq, groupQq` |
-| 分享音乐 | `ShareMusic` | bool | `thisQq, target, musicNameUtf8, artistNameUtf8, jumpUrlUtf8, coverUrlUtf8, fileUrlUtf8, appType, shareType` |
-| 提取图片文字 | `ExtractTextFromImage` | bool | `thisQq, imageUrlUtf8, outTextUtf8` |
-| 调用指定OneBot接口 | `CallOneBotInterface` | std::string | `thisQq, sendDataUtf8, noWait` |
-| 取群成员信息 | `GetGroupMemberInfo` | std::string | `thisQq, groupQq, otherQq, outData*` |
+| 取群列表 | `GetGroupList` | int32_t | `myUin, blocks*` |
+| 取群成员列表 | `GetGroupMemberList` | int32_t | `myUin, groupUin, blocks*` |
+| 发送群临时消息 | `SendGroupTemporaryMessage` | std::string | `myUin, groupUin, otherUin, contentUtf8, outRandom*, outReq*` |
+| 发送群json消息 | `SendGroupJsonMessage` | std::string | `myUin, groupUin, jsonUtf8, anonymous` |
+| 上传好友图片 | `UploadFriendImage` | std::string | `myUin, friendUin, isFlash, picBytes, picSize, wide, high, cartoon, previewTextUtf8` |
+| 上传群图片 | `UploadGroupImage` | std::string | `myUin, groupUin, isFlash, picBytes, picSize, wide, high, cartoon, previewTextUtf8` |
+| 上传好友语音 | `UploadFriendAudio` | std::string | `myUin, friendUin, audioType, audioTextUtf8, audioBytes, audioSize, timeSeconds` |
+| 上传群语音 | `UploadGroupAudio` | std::string | `myUin, groupUin, audioType, audioTextUtf8, audioBytes, audioSize, timeSeconds` |
+| 上传群文件 | `UploadGroupFile` | std::string | `myUin, groupUin, filePathUtf8, folderUtf8` |
+| 取管理层列表 | `GetAdministratorList` | std::string | `myUin, groupUin` |
+| 取群名片 | `GetGroupCard` | std::string | `myUin, groupUin, memberUin` |
+| 设置群名片 | `SetGroupCard` | std::string | `myUin, groupUin, memberUin, newCardUtf8` |
+| 取昵称_从缓存 | `GetNicknameFromCache` | std::string | `otherUinTextUtf8` |
+| 强制取昵称 | `GetNicknameForce` | std::string | `myUin, otherUinTextUtf8` |
+| 取好友文件下载地址 | `GetFriendFileDownloadUrl` | std::string | `myUin, fileIdUtf8, fileNameUtf8` |
+| 取图片下载地址 | `GetImageDownloadUrl` | std::string | `imageCodeUtf8, myUin, groupUin` |
+| 撤回消息_群聊 | `RecallGroupMessage` | bool | `myUin, groupUin, messageRandom, messageReq` |
+| 禁言群成员 | `MuteGroupMember` | bool | `myUin, groupUin, memberUin, durationSeconds` |
+| 删除群成员 | `RemoveGroupMember` | bool | `myUin, groupUin, memberUin, refuseNextJoin` |
+| 处理好友验证事件 | `HandleFriendVerificationEvent` | void | `myUin, triggerUin, messageSeq, operateType` |
+| 处理群验证事件 | `HandleGroupVerificationEvent` | void | `myUin, sourceGroupUin, triggerUin, messageSeq, operateType, eventType, refuseReasonUtf8` |
+| 全员禁言 | `MuteAll` | bool | `myUin, groupUin, enabled` |
+| QQ点赞 | `QQLike` | std::string | `myUin, otherUin` |
+| 群聊打卡 | `GroupCheckIn` | std::string | `myUin, groupUin` |
+| 分享音乐 | `ShareMusic` | bool | `myUin, target, musicNameUtf8, artistNameUtf8, jumpUrlUtf8, coverUrlUtf8, fileUrlUtf8, appType, shareType` |
+| 提取图片文字 | `ExtractTextFromImage` | bool | `myUin, imageUrlUtf8, outTextUtf8` |
+| 调用指定OneBot接口 | `CallOneBotInterface` | std::string | `myUin, sendDataUtf8, noWait` |
+| 取群成员信息 | `GetGroupMemberInfo` | std::string | `myUin, groupUin, otherUin, outData*` |
 | 取插件数据目录 | `GetPluginDataDirectory` | std::string | （无） |
 | 重载自身 | `ReloadItSelf` | void | `newDllPathUtf8`（空/NULL 等价 `"empty"`） |
 | 取插件自身版本号 | `GetPluginSelfVersion` | std::string | （无） |
 | 取框架主窗口句柄 | `GetFrameworkMainWindowHandle` | uint32_t | （无） |
-| 取QQ头像 | `GetQQAvatar` | std::string | `otherQq, hdOriginal` |
+| 取QQ头像 | `GetQQAvatar` | std::string | `otherUin, hdOriginal` |
 | 取插件文件名 | `GetPluginFileName` | std::string | （无） |
 | 取框架版本 | `GetFrameworkVersion` | std::string | （无） |
+
+## 字段命名规范（重要）
+
+本 SDK 的公开字段/参数统一遵循 [`../../SDK字段命名规范.md`](../../SDK字段命名规范.md)：
+
+- C++ 结构体成员 / 参数用 `PascalCase`；Python 用同词根的 `snake_case`。
+- QQ 号统一 `*Uin`：**框架QQ = `MyUin`**、发送人QQ = `SenderUin`、群号 = `GroupUin`。
+- 标识类用 `Id` 结尾（`BubbleId` / `MessageClipId` / `PendantId` / `FontId`）。
+- **群名片 = `Card`**（旧名 `SenderNickname` 已废弃）；`Nickname` 仅表示原始昵称。
+- 历史错拼已修正：`AnonymousFalg` → `AnonymousFlag`、`LastSpeackTime` → `LastSpeakTime`。
+
+## 事件常量（`xlz_constants.h`）
+
+易语言 SDK 常量表里的事件 / 状态常量已迁移到 `include/xlz_constants.h`，**数值与框架内部定义逐条一致**（源：`cornsdk6.0.8.e` 常量表）。全部为 `enum class : int32_t`，按易语言常量前缀分成 13 组：
+
+| 分组（C++） | 对应易语言前缀 | 条数 | 用途 |
+|---|---|---|---|
+| `xlz::MessageHandle` | `消息处理_` | 2 | 消息回调返回值：`Intercept`(1) 拦截 / `Ignore`(0) 放行 |
+| `xlz::MessageType` | `消息类型_` | 8 | 私聊/临时会话的消息类型（`TemporarySession`=141 等） |
+| `xlz::ChannelPushType` | `频道推送类型_` | 3 | `SubChannelMessage` / `DirectMessage` / `EventMessage` |
+| `xlz::GroupEvent` | `群事件_` | 41 | 群事件子类型（进群、退群、禁言、群名片变更…） |
+| `xlz::ZoneEvent` | `空间事件_` | 1 | `RelatedToMe`(29) |
+| `xlz::FrameworkEvent` | `框架事件_` | 3 | `LoginSuccess`/`LoginFailed`/`RestartingForUpdate` |
+| `xlz::DiscussionGroupEvent` | `讨论组事件_` | 5 | 讨论组成员/名称变更（300–304） |
+| `xlz::FriendEvent` | `好友事件_` | 20 | 好友请求、签名变更、点赞、输入状态…（100–119） |
+| `xlz::LoginEvent` | `登录事件_` | 5 | 电脑/移动端上下线、其他应用登录验证（200–204） |
+| `xlz::VirtualMachineEvent` | `虚拟机事件_` | 1 | `OneBotRawRequest`(205) |
+| `xlz::SubChannelEvent` | `子频道事件_` | 4 | 子频道系统提示、贴表情、撤回、直播状态（0–3） |
+| `xlz::ChannelEvent` | `频道事件_` | 1 | `UserApplyJoinChannel`(4) |
+| `xlz::EnableResponse` | `启用响应_` | 2 | 插件启用回调返回值：`Reject`(8) / `Done`(0) |
+
+> 说明：易语言常量表里「消息处理_拦截 / 启用响应_拒绝」等原本是**文本常量**（`"1"` / `"8"`），
+> 这里按其作为**回调返回值的实际语义**暴露为整数枚举，可直接 `return (int)xlz::MessageHandle::Intercept;`。
+
+用法示例：
+
+```cpp
+#include "xlz_events.h"
+#include "xlz_constants.h"
+
+XLZ_API int XLZ_CALL RecviceGroupMesg(void* data)
+{
+    const auto* ev = reinterpret_cast<const xlz::GroupMessageEvent*>(data);
+    if (ev->MessageSubType == (uint32_t)xlz::GroupEvent::MemberJoined)
+    {
+        // 有人入群
+    }
+    if (ev->MessageType == (uint32_t)xlz::MessageType::TemporarySession)
+    {
+        // 临时会话消息
+    }
+    return (int)xlz::MessageHandle::Ignore; // 等价于 return 0
+}
+```
+
+事件类型 / 子类型字段与枚举的对应关系：
+
+- `GroupMessageEvent` / `PrivateMessageEvent` 的 `MessageType`、`MessageSubType` → `xlz::MessageType`、`xlz::GroupEvent`
+- `EventTypeBase` 的 `EventType`、`EventSubType` → `xlz::GroupEvent` / `xlz::FriendEvent` / `xlz::LoginEvent` …
+- 回调返回值 → `xlz::MessageHandle`（消息类）、`xlz::EnableResponse`（启用类）
+
+Python 端对应模块为 `xlz_constants.py`，成员名由同名 `PascalCase` 自动转 `UPPER_SNAKE_CASE`
+（`GroupEvent::MemberJoined` → `GroupEvent.MEMBER_JOINED`）。
+
 
 

@@ -117,8 +117,8 @@ def on_group_message(ev: dict) -> int:
         import ctypes
         api.output_log(f"[Pillow演示] 图片已生成，大小: {len(img_data)} 字节，开始上传...")
         img_code = api.upload_group_image(
-            ev.get("this_qq", 0),
-            ev.get("group_qq", 0),
+            ev.get("my_uin", 0),
+            ev.get("group_uin", 0),
             False,
             img_data,
         )
@@ -127,8 +127,8 @@ def on_group_message(ev: dict) -> int:
         # 发送消息（包含图片代码）
         msg = f"[Pillow演示] 已生成测试图片\n图片大小: {len(img_data)} 字节\nBase64 长度: {len(img_b64)}{img_code}"
         api.send_group_message(
-            ev.get("this_qq", 0),
-            ev.get("group_qq", 0),
+            ev.get("my_uin", 0),
+            ev.get("group_uin", 0),
             msg,
             False,
         )

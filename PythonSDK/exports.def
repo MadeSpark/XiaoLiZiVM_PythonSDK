@@ -18,3 +18,5 @@ EXPORTS
     XLZ_Bridge_CallApiVoid=_XLZ_Bridge_CallApiVoid@8
     XLZ_Bridge_Utf8ToUsc2AnsiPtr=_XLZ_Bridge_Utf8ToUsc2AnsiPtr@4
     XLZ_Bridge_ResetTempStrings=_XLZ_Bridge_ResetTempStrings@0
+    XLZ_Bridge_UploadGroupImage=_XLZ_Bridge_UploadGroupImage@28
+    XLZ_Bridge_SetAsync=_XLZ_Bridge_SetAsync@4

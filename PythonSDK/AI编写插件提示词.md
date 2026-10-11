@@ -31,6 +31,7 @@
 - 使用 `PythonSDK` 的标准结构开发：
   - 必须包含 `plugin_main.py`
   - 必须通过 `from xlz_sdk import Bridge` 初始化 `api`
+  - 把 `xlz_sdk.py` 与 `xlz_constants.py` 一并复制到插件目录（打包时缺一不可）
 - 在 `apprun(ctx)` 中：
   - 使用 `api = Bridge(ctx["dll_path"])`
   - 返回包含 `app_name / author / app_version / description / permissions` 的字典
@@ -46,12 +47,42 @@
 ### 2. 事件处理与返回值规范
 
 - 群聊/私聊/事件回调：
-  - 返回 `0`：继续传递
-  - 返回 `1`：拦截
+  - 返回 `MessageHandle.IGNORE`（`0`）：继续传递
+  - 返回 `MessageHandle.INTERCEPT`（`1`）：拦截
 - 启用回调 `on_enable()`：
-  - 返回 `0`：正常启用
-  - 返回 `1`：拒绝启用（框架将停止加载插件）
+  - 返回 `EnableResponse.DONE`（`0`）：正常启用
+  - 返回 `EnableResponse.REJECT`（`8`）：拒绝启用（框架将停止加载插件）
 - 对 `ev` 参数使用 `dict.get()` 读取字段，避免键缺失异常。
+
+### 2.1 事件常量（`xlz_constants.py`）
+
+**禁止使用魔法数字**，事件类型 / 子类型一律用常量比较：
+
+```python
+from xlz_constants import MessageHandle, EnableResponse, GroupEvent, FriendEvent, LoginEvent
+
+def on_event_message(ev: dict) -> int:
+    et = ev.get("event_type")          # 与 IntEnum 可直接比较
+    if et == GroupEvent.MEMBER_JOINED:
+        api.output_log("有人入群")
+    elif et == FriendEvent.FRIEND_REQUEST:
+        api.output_log("收到好友请求")
+    return MessageHandle.IGNORE
+```
+
+常量分 13 组：`MessageHandle`、`MessageType`、`ChannelPushType`、`GroupEvent`、`ZoneEvent`、
+`FrameworkEvent`、`DiscussionGroupEvent`、`FriendEvent`、`LoginEvent`、`VirtualMachineEvent`、
+`SubChannelEvent`、`ChannelEvent`、`EnableResponse`。详见 `README.md`「事件常量」章节与
+`xlz_constants.py` 内的逐条注释（数值与框架内部一致，勿改）。
+
+### 2.2 自由线程（可选）
+
+插件已支持自由线程（运行时已释放 GIL，桥接层线程安全）：
+
+- 回调里做耗时操作时用 `run_in_thread(fn, *args)`（返回 `Future`）或 `spawn(target, *args)`，
+  不要阻塞框架消息线程；
+- 需要事件整体异步派发时用 `api.set_async(True)`（代价：回调返回值不再能拦截后续插件）；
+- `on_uninstall` / `on_disable` 里调用 `shutdown_threads(wait=False)` 回收线程池。
 
 ### 3. 权限与 API 调用
 

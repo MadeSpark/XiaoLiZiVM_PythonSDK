@@ -10,7 +10,7 @@
 ipch/
 
 # Build intermediates (keep bin/Release DLLs)
-bin/obj/
+**/bin/obj/
 *.log
 *.recipe
 *.iobj
@@ -27,3 +27,8 @@ __pycache__/
 # Plugin runtime temp
 debug.log
 .xlz_pystate_*.txt
+
+# Releases 成品区（由 tools/rebuild_all.py 自动生成，可随时从源码重建）
+Releases/
+Releases.__tmp__/
+Releases.__old__/

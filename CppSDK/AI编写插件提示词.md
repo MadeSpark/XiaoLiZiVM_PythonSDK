@@ -34,6 +34,13 @@
   - 插件内部统一使用 **UTF-8** 处理文本。
   - 在调用框架 API 前后，使用 SDK 提供的编码工具（如 `xlz_encoding.h/.cpp`、`xlz_event_utf8.h`）进行 UTF-8 与 usc2/ANSI 混合文本的转换。
 
+- **事件常量（`xlz_constants.h`）**
+  - 事件类型 / 子类型与回调返回值**禁止写魔法数字**，统一用 `xlz_constants.h` 里的 `enum class`：
+    `xlz::GroupEvent::MemberJoined`、`xlz::FriendEvent::FriendRequest`、`xlz::MessageType::TemporarySession` 等。
+  - 回调返回值用 `xlz::MessageHandle::Intercept` / `Ignore`（消息类）、`xlz::EnableResponse::Done` / `Reject`（启用类）。
+  - 比较时注意整数转换：`ev->EventType == static_cast<uint32_t>(xlz::GroupEvent::MemberJoined)`。
+  - 数值与易语言 SDK 常量表逐条一致（13 组 / 96 个），勿改。详见 `README.md`「事件常量」章节。
+
 ---
 
 ### 2. 配置读写与文本转义（重点）

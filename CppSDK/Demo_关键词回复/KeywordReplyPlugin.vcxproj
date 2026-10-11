@@ -65,6 +65,7 @@
   <ItemGroup>
     <ClInclude Include="..\include\xlz_api.h" />
     <ClInclude Include="..\include\xlz_appinfo.h" />
+    <ClInclude Include="..\include\xlz_constants.h" />
     <ClInclude Include="..\include\xlz_encoding.h" />
     <ClInclude Include="..\include\xlz_events.h" />
     <ClInclude Include="..\include\xlz_exports.h" />

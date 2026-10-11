@@ -196,7 +196,7 @@ def on_setting():
 def on_group_message(ev: dict) -> int:
     """
     收到群消息时调用
-    参数: ev = {'this_qq': int, 'group_qq': int, 'sender_qq': int, 'message': str, 'group_name': str, 'sender_nick': str}
+    参数: ev = {'my_uin': int, 'group_uin': int, 'sender_uin': int, 'message': str, 'group_name': str, 'card': str}
     返回值: 0=继续传递给其他插件，1=拦截该消息不给后续插件处理
     """
     if api is None:
@@ -222,8 +222,8 @@ def on_group_message(ev: dict) -> int:
             reply = _apply_groups(reply, m)
 
         api.send_group_message(
-            ev.get("this_qq", 0),
-            ev.get("group_qq", 0),
+            ev.get("my_uin", 0),
+            ev.get("group_uin", 0),
             reply,
             False,
         )
@@ -236,7 +236,7 @@ def on_group_message(ev: dict) -> int:
 def on_private_message(ev: dict) -> int:
     """
     收到私聊消息时调用
-    参数: ev = {'this_qq': int, 'sender_qq': int, 'message': str}
+    参数: ev = {'my_uin': int, 'sender_uin': int, 'message': str}
     返回值: 0=继续传递给其他插件，1=拦截该消息不给后续插件处理
     """
     return 0
@@ -245,7 +245,7 @@ def on_private_message(ev: dict) -> int:
 def on_event_message(ev: dict) -> int:
     """
     收到事件消息时调用
-    参数: ev = {'this_qq': int, 'event_type': int, 'event_sub_type': int, 'trigger_qq': int, 'source_group_qq': int, 'operate_qq': int, 'message': str}
+    参数: ev = {'my_uin': int, 'event_type': int, 'event_sub_type': int, 'trigger_uin': int, 'source_group_uin': int, 'operate_uin': int, 'message': str}
     返回值: 0=继续传递给其他插件，1=拦截该事件不给后续插件处理
     """
     return 0
