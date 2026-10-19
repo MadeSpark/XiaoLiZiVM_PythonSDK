@@ -53,7 +53,7 @@ SDK 的 stdcall 调用器基于 x86 汇编实现，必须使用 32 位编译：
 
 - Visual Studio 2019/2022（需安装 C++ 桌面开发组件）
 - 需要能使用 Win32(x86) 工具链（cl/link）
-- 工具集：工程默认 `v142`（VS2019）；机器上只有 `v143` 时用 msbuild `/p:PlatformToolset=v143` 覆盖，**不用改工程文件**
+- 工具集：`Demo_TemplatePlugin`、`Demo_WebUI` 默认 `v142`（VS2019），`Demo_关键词回复` 是 `v145`；机器上没有对应工具集时用 msbuild `/p:PlatformToolset=<你的工具集>` 覆盖，**不用改工程文件**
 
 说明：`msbuild` 默认不在 PATH 中，直接给全路径即可，例如
 `"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe"`；
@@ -195,7 +195,7 @@ for (int i = 0; i < count && i < blocks[0].Amount; ++i)
 
 ## 字段命名规范（重要）
 
-本 SDK 的公开字段/参数统一遵循 [`../../SDK字段命名规范.md`](../../SDK字段命名规范.md)：
+本 SDK 的公开字段/参数统一遵循 [`../SDK字段命名规范.md`](../../SDK字段命名规范.md)：
 
 - C++ 结构体成员 / 参数用 `PascalCase`；Python 用同词根的 `snake_case`。
 - QQ 号统一 `*Uin`：**框架QQ = `MyUin`**、发送人QQ = `SenderUin`、群号 = `GroupUin`。
@@ -418,31 +418,33 @@ void StopWebUi()   // 插件卸载回调里调
 
 ### 编译 Demo_WebUI
 
-工程默认工具集是 `v142`（VS2019）。没装 VS2019 时用 `/p:PlatformToolset=v143`（或 `v145`）覆盖即可，
-不必改工程文件：
+工程默认工具集是 `v142`（VS2019）。没装 VS2019 时用 `/p:PlatformToolset=v145` 覆盖即可
+（用 VS2022 的话换成 `v143`），不必改工程文件：
 
 ```bat
 "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" ^
   Demo_WebUI\WebUIDemo.vcxproj /p:Configuration=Release /p:Platform=Win32 ^
-  /p:PlatformToolset=v143
+  /p:PlatformToolset=v145
 ```
 
 产物：`Demo_WebUI\bin\Release\XiaoLiZiVM_CppSDK_WebUI.dll`（编译产物，不提交；`bin\obj\` 已忽略）。
 
-**已验证**：`/p:PlatformToolset=v145`（VS 18 / MSVC 14.44）下编译链接通过，仅 2 条
-`C4244`（`int64_t`→`int32_t` 参数截断）警告，无错误。**未验证**：运行时渲染 ——
+**已验证**：`/p:PlatformToolset=v145`（VS 18 / MSVC 14.44）下编译链接通过，仅 2 处
+`C4244`（`int64_t`→`int32_t` 参数截断）警告（日志里因汇总会重复打印成 4 行），无错误。**未验证**：运行时渲染 ——
 需要 `MbKit146.dll`，且该内核不随本 SDK 分发。
 
 ### 已知状态（如实记录）
 
-- `CppSDK\Demo_TemplatePlugin`、`Demo_关键词回复`、`Demo_WebUI` 三个工程都钉 `v142`（VS2019）。
-  没有 VS2019 时 MSBuild 会报 `MSB8020`，必须显式覆盖工具集。
-- 仓库内 `Demo_TemplatePlugin\bin\Release\XiaoLiZiVM_CppSDK_Template.dll` 是 **2026-03-03 的旧构建**，
-  早于本次新增的 `src\xlz_webui.cpp`；`TemplatePlugin.vcxproj` 已把该源码加入编译项，
+- 工具集不统一：`Demo_TemplatePlugin`、`Demo_WebUI` 钉 `v142`（VS2019），`Demo_关键词回复` 的
+  `KeywordReplyPlugin.vcxproj` 钉 `v145`。本机没有 VS2019 时前者会报 `MSB8020`，必须显式覆盖工具集
+  （`/p:PlatformToolset=v145`）；后者可直接编译。
+- 本机工作区的 `Demo_TemplatePlugin\bin\Release\XiaoLiZiVM_CppSDK_Template.dll` 是一份 **2026-03-03 的旧构建**
+  （`bin/` 被 `.gitignore` 忽略、**未入库**，新克隆的仓库里没有这个文件）。它早于本次新增的 `src\xlz_webui.cpp`；
+  `TemplatePlugin.vcxproj` 已把该源码加入编译项，
   因此**工程文件与这份预编译 DLL 不对应**。因为模板 `plugin.cpp` 并不调用 WebUI，
   运行行为不受影响；需要与工程一致的成品请自行重编（`/p:PlatformToolset=v145` 已验证可编译通过）。
-- `Demo_关键词回复\KeywordReply.vcxproj` **没有**加入 `xlz_webui.cpp`（两个 C++ demo 目前不一致），
-  它同样不调用 WebUI。
+- `Demo_关键词回复\KeywordReplyPlugin.vcxproj` **没有**加入 `xlz_webui.cpp`（它是更早的 demo，与
+  `Demo_TemplatePlugin`、`Demo_WebUI` 现在不一致），这个 demo 本身也不调用 WebUI。
 - `Demo_WebUI` 不提供预编译 DLL（`MbKit146.dll` 不随 SDK 分发，带成品也无从运行）。
 
 自检（离线，不启动宿主）：
