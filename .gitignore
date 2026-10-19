@@ -32,3 +32,10 @@ debug.log
 Releases/
 Releases.__tmp__/
 Releases.__old__/
+
+# 运行期/解包缓存（宿主在 bin\Release 里跑过会留下这些）
+**/work_python_plugin_tmp/
+**/work_plugin_tmp/
+**/py_payload/
+**/_xlz_ret_*.txt
+CppSDK/Demo_WebUI/bin/Release/

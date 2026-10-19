@@ -14,9 +14,13 @@
 
 关于 Releases\\（成品区）：
     一个「不需要编译、拿来就能写插件」的独立目录，只放作者要用的东西：
-        空壳 DLL + pack_payload.py + xlz_sdk.py + xlz_constants.py + plugin_main.py
+        空壳 DLL + pack_payload.py + xlz_sdk.py + xlz_constants.py + xlz_webui.py + plugin_main.py
         + 自动改写路径的 AI 编写提示词 + 自动生成的 README
     它是**纯生成物**，每次跑本脚本都会被整体重建，请勿手工往里面放东西。
+
+    注意：内嵌浏览器（webui）需要的 MbKit146.dll **不在**本成品包里 —— 那属于内核分发，
+    由发布负责人单独决定（见下面 RELEASE_MBKIT_DLL 开关）。包里只放调用它的 xlz_webui.py，
+    找不到 DLL 时 xlz_webui 会抛 MbKitNotFoundError 并列出搜索过的路径，不会崩插件。
 
 用法：
     python tools\\rebuild_all.py               # 完整重建（推荐）
@@ -86,7 +90,18 @@ RELEASE_FILES = [
     (TEMPLATE_DIR / "plugin_main.py", RELEASE_TEMPLATE_SUB + "/plugin_main.py"),
     (TEMPLATE_DIR / "xlz_sdk.py", RELEASE_TEMPLATE_SUB + "/xlz_sdk.py"),
     (TEMPLATE_DIR / "xlz_constants.py", RELEASE_TEMPLATE_SUB + "/xlz_constants.py"),
+    (TEMPLATE_DIR / "xlz_webui.py", RELEASE_TEMPLATE_SUB + "/xlz_webui.py"),
     (PACK_TOOL, RELEASE_TOOLS_SUB + "/pack_payload.py"),
+]
+
+# 可选：把内嵌浏览器内核 MbKit146.dll 一起发出去（webui 运行时需要它）。
+#   None      = 不发（默认）。成品包里只有 xlz_webui.py，作者自己把 DLL 放到插件目录 / 宿主目录。
+#   Path(...) = 发。会拷到 tools/ 下；**要不要分发内核是发布负责人的决定**（授权、版本对齐）。
+# 找不到就跳过并提示，不中断构建 —— 内核缺失只会让 webui 不可用，不影响其它插件能力。
+RELEASE_MBKIT_DLL = None
+MBKIT_DLL_CANDIDATES = [
+    ROOT.parent.parent / "main" / "plugin" / "MbKit146.dll",   # 宿主插件目录
+    ROOT.parent.parent / "MbKit146.dll",                       # 工作区根
 ]
 
 # 提示词改写表：(原片段, 替换片段, 期望命中次数)
@@ -108,7 +123,8 @@ PROMPT_REWRITES = [
         "├── template/                        ★ 插件模板（从这里开始）\n"
         "│   ├── plugin_main.py                 要改的就是它\n"
         "│   ├── xlz_sdk.py                     桥接层，别改\n"
-        "│   └── xlz_constants.py               事件 / 状态常量，别改\n"
+        "│   ├── xlz_constants.py               事件 / 状态常量，别改\n"
+        "│   └── xlz_webui.py                   内嵌浏览器（可选），别改\n"
         "└── tools/                           打包地基\n"
         "    ├── XiaoLiZiVM_PythonCompat.dll    C++ 空壳（打包输入）\n"
         "    └── pack_payload.py                打包工具\n"
@@ -120,12 +136,13 @@ PROMPT_REWRITES = [
         "| `template/plugin_main.py` | 插件主逻辑 | **要改** |\n"
         "| `template/xlz_sdk.py` | 桥接层，`from xlz_sdk import Bridge` | 别改 |\n"
         "| `template/xlz_constants.py` | 事件 / 状态常量（13 组 96 个） | 别改 |\n"
+        "| `template/xlz_webui.py` | 内嵌浏览器窗口（可选，运行时需要 `MbKit146.dll`） | 要用才 import |\n"
         "| `tools/XiaoLiZiVM_PythonCompat.dll` | C++ 空壳（打包地基） | 只当打包输入 |\n"
         "| `tools/pack_payload.py` | 打包工具：把插件目录压进空壳 DLL | 命令行调用 |\n"
         "| `README.md` | 包说明、打包步骤、回调约定 | 先读它 |\n"
         "\n"
         "> `xlz_sdk.py` 与 `xlz_constants.py` 必须与 `plugin_main.py` 同级 —— `template/` 已按此摆好，"
-        "**整目录复制即可**（别单挑文件）。\n",
+        "**整目录复制即可**（别单挑文件）。`xlz_webui.py` 同理（可选，不用也能打包）。\n",
         1,
     ),
     (
@@ -196,7 +213,8 @@ RELEASE_README_TEMPLATE = r"""# 小栗子虚拟机 · Python 插件 SDK 成品�
 | 生成时间 | @BUILD_TIME@ |
 | 空壳 DLL | `tools/XiaoLiZiVM_PythonCompat.dll` · @DLL_SIZE@ 字节 · @DLL_TIME@ |
 | 空壳 SHA-256（前 16 位） | `@DLL_SHA16@` |
-| 目标平台 | Win32（32 位）· CPython 3.10 |
+| 目标平台 | Win32（32 位）· CPython 3.14.8 自由线程（`cp314t`） |
+| 最低系统 | Windows 10+ |
 
 ---
 
@@ -219,7 +237,8 @@ Releases/
 ├── template/                        ★ 插件模板 —— 从这里开始
 │   ├── plugin_main.py                 要改的就是它
 │   ├── xlz_sdk.py                     桥接层，原样别动
-│   └── xlz_constants.py               事件 / 状态常量，原样别动
+│   ├── xlz_constants.py               事件 / 状态常量，原样别动
+│   └── xlz_webui.py                   内嵌浏览器（可选），原样别动
 └── tools/                           打包地基
     ├── XiaoLiZiVM_PythonCompat.dll    C++ 空壳（打包输入）
     └── pack_payload.py                打包工具
@@ -231,6 +250,7 @@ Releases/
 | `template/plugin_main.py` | 插件主逻辑（回调骨架已齐） | **要改** |
 | `template/xlz_sdk.py` | 桥接层，`from xlz_sdk import Bridge` | 别动 |
 | `template/xlz_constants.py` | 事件 / 状态常量（13 组 96 个） | 别动 |
+| `template/xlz_webui.py` | 内嵌浏览器窗口（可选，运行时需 `MbKit146.dll`） | 要用才 import |
 | `tools/XiaoLiZiVM_PythonCompat.dll` | C++ 空壳（打包地基） | 只作为打包输入 |
 | `tools/pack_payload.py` | 打包工具 | 命令行调用 |
 | `AI编写插件提示词.md` | 交给 AI 的提示词 | 填好需求后整份丢给 AI |
@@ -238,6 +258,7 @@ Releases/
 
 > `xlz_sdk.py` 与 `xlz_constants.py` **必须**和 `plugin_main.py` 同级，打包时缺一不可。
 > `template/` 已经按这个要求摆好了 —— 所以**别单独挑文件拷，直接整目录复制**。
+> `xlz_webui.py` 同理，一起复制过去即可；不 import 它就等于不存在。
 
 ## 30 秒上手
 
@@ -298,9 +319,20 @@ elif et == FriendEvent.FRIEND_REQUEST:
 return MessageHandle.IGNORE
 ```
 
+## 运行时要求
+
+宿主自带运行时：`main\corn\python\` 已是 **CPython 3.14.8t（Win32 自由线程）**，不需要另装 Python。
+
+- **最低系统 Windows 10+**：CPython 3.14 不再支持 Windows 8.1 / 7。
+- **只有 `python3t.dll`，没有 `python3.dll`**：GIL 版 `abi3` 扩展找不到转发 DLL，加载必失败；请用 `cp314t` 或纯 Python wheel；`abi3t` 在 3.14.8t 下未验证。
+- **不要把 64 位 / 旧版本的 DLL 放进 `main\corn\python\`**：第三方扩展统一放插件目录，随 payload 打包。
+- 标准库在 `python\Lib\`，原生扩展在 `python\DLLs\`；包内没有 `site-packages`、没有 `pip`/`ensurepip`，不要依赖宿主解释器安装依赖；运行时也不是隔离模式，用户目录的 `site-packages` 和 `PYTHON*` 环境变量仍可能生效。
+- **32 位地址空间约 2 GB**：3.14t 实测大块内存可用量低于 3.10.11，重型依赖先压测。
+- **运行时会写 `__pycache__`**：首次运行会在 `Lib\` 下生成；只读安装目录会每次重新编译。
+
 ## 自由线程
 
-运行时已释放 GIL，桥接层线程安全，**可以在任意线程里调 API**（`output_log` / `send_group_message` …）。
+运行时是 **CPython 3.14.8 自由线程构建（PEP 703，GIL 已禁用）**，桥接层线程安全，**可以在任意线程里调 API**（`output_log` / `send_group_message` …）。
 
 ```python
 from xlz_sdk import run_in_thread, spawn, shutdown_threads
@@ -311,17 +343,65 @@ api.set_async(True)                # 事件改由 C++ 工作线程派发，回�
 shutdown_threads(wait=False)       # on_uninstall / on_disable 里回收线程池
 ```
 
+> 单线程不会更快：3.14t 与 3.10.11 基本持平甚至略慢；本次 4 线程约 2.9x、8 线程约 4.4x，且受 C 扩展是否重新拿 GIL 影响，勿承诺线性扩展。
+
 > `set_async(True)` 的代价：`on_xxx` 的返回值**不再用于拦截**后续插件。依赖抢答 / 独占的插件请保持默认同步模式。
+
+## 内嵌浏览器（webui，可选）
+
+`template/xlz_webui.py` 让插件在框架窗口里挂一个真浏览器（miniblink 内核，和易语言 `MB浏览框`
+同一套），能 `load_url` / `load_html` / `run_js`，也能把 Python 函数暴露给网页 JS 调。
+
+```python
+from xlz_webui import WebView
+
+wv = WebView()                                    # 自动按搜索顺序找 MbKit146.dll
+wv.bind(api.get_framework_main_window_handle())   # 绑到宿主主窗口（同线程！）
+wv.js_bind_function("pyEcho", lambda s: "hi " + str(s), 1)
+wv.load_html("<button onclick='alert(pyEcho(1))'>试</button>")
+```
+
+### 三条必须守住的规则
+
+1. **线程铁律**：`bind()` 必须在「承载窗口的创建线程」上跑。对宿主窗口就是框架消息线程，
+   也就是 `on_*` 回调所在线程 —— **在回调里直接调**是对的；塞进 `run_in_thread` / `spawn`
+   就是灰屏的经典原因，本模块会直接抛 `MbKitThreadError`，不让你对着一片白猜。
+2. **入口顺序**：`WebView()` → `bind(hwnd)` → 注册事件 / `js_bind_function` → `load_*`。
+   想立刻跑 JS 必须等 `on_document_ready2` 回调，之前 DOM 还没生成。
+3. **热重载契约**：`on_uninstall` 里顺序不能换 —— ① 先停一切会碰窗口的线程/定时器，
+   ② 再 `detach_all()`（内部销毁本插件所有 view），③ 最后内核全解绑。回调进来先看卸载标志
+   （`xlz_webui.is_unloading()`），是卸载中就立刻返回，绝不碰已销毁的控件。
+
+### MbKit146.dll
+
+- 内核 DLL **不在本包里**：放到框架目录 / 插件目录 / `%TEMP%\ElangMbKit` 都能被找到，
+  也可以用环境变量 `XLZ_MBKIT_DLL` 或 `WebView(dll_path=...)` 明确指定。
+- 找不到只影响 webui：构造时抛 `MbKitNotFoundError` 并列出搜索过的路径，**不会**拖垮插件。
+- 版本要求 `MbKit/1.4.5`。注意 `MbKit_Version()` 在**内核启动之前返回空串**，所以版本校验
+  发生在第一次 `bind()`（启动内核）之后，启动前判不了 —— 别在 `apprun` 里断言版本。
+
+### 已知限制（如实说，别美化）
+
+- 内核**一个进程只有一份**，换内核只能重启宿主 exe。
+- 快速连续重载插件（约 5 次）仍可能让宿主崩在 `win32u.dll+0x11cc` —— 是内核里 WebView2
+  异步释放的竞态，不在本模块可控范围，只能先靠「别连着重载」。
+- view 销毁是**延迟回收**（约 400 ms），刚 `destroy()` 的窗口不要马上复用。
+- 只有窗口模式经过验证（无窗口 headless 仅能初始化，不保证渲染）。
+- 输入法只做了候选窗定位；`js_bind_function` 的函数名只能用 ASCII 字母/数字/下划线。
 
 ## 外部依赖
 
-必须是 **CPython 3.10 + win32** 的 wheel，解到插件目录里一起打包：
+必须是 **CPython 3.14 自由线程（`cp314t`）+ win32** 的 wheel，解到插件目录里一起打包：
 
 ```bat
-python.exe -m pip install pillow --only-binary=:all: --python-version 3.10 --platform win32 --target MyPlugin
+python.exe -m pip install pillow --only-binary=:all: --python-version 3.14 --platform win32 --abi cp314t --target MyPlugin
 ```
 
-`json` / `re` / `pathlib` / `ctypes` / `sqlite3` 等标准库随解释器提供，**不要**重复打包。
+- 文件名形如 `pillow-13.0.0-cp314-cp314t-win32.whl`；GIL 版 `cp314-cp314-win32` 不能加载，
+  `abi3` 也不行（`abi3t` 在 3.14.8t 下未验证，不要依赖）。
+- 纯 Python 包（`py3-none-any`）不受限制。
+- `json` / `re` / `pathlib` / `ctypes` / `sqlite3` 等标准库随解释器提供，**不要**重复打包。
+- 3.12 / 3.13 已删除的 `distutils`、`imp`、`cgi`、`telnetlib` 等模块在 3.14t 中不存在。
 
 ## 这个包是自动生成的
 
@@ -329,7 +409,7 @@ python.exe -m pip install pillow --only-binary=:all: --python-version 3.10 --pla
 
 1. 重编 `XiaoLiZiVM_PythonCompat.dll`（Release | Win32）
 2. 校验 PE 导出表 —— 少一个导出就**不生成**本目录，避免发出坏包
-3. 把 `template\`（三件套）与 `tools\`（空壳 + 打包工具）同步进来
+3. 把 `template\`（四件套）与 `tools\`（空壳 + 打包工具）同步进来
 4. 由 `PythonSDK/AI编写插件提示词.md` 自动改写生成 `AI编写插件提示词.md`（仓库路径 -> 包内相对路径）
 
 所以这个目录不会出现「源码改了但成品还是旧的」。
@@ -467,7 +547,10 @@ def build_release_prompt():
         raise RuntimeError("提示词源文件不存在: %s" % PROMPT_SRC)
 
     # 源文件是 CRLF；先归一到 LF 再做整片替换，避免行尾干扰命中
-    text = PROMPT_SRC.read_text(encoding="utf-8", newline="").replace("\r\n", "\n")
+    # 用 open(..., newline="") 而非 Path.read_text(newline=...)：后者是 Python 3.13 才有的参数，
+    # 在 3.10~3.13（本仓库常用版本）上会直接 TypeError。行为完全一致。
+    with open(PROMPT_SRC, "r", encoding="utf-8", newline="") as f:
+        text = f.read().replace("\r\n", "\n")
 
     for i, (old, new, want) in enumerate(PROMPT_REWRITES, 1):
         got = text.count(old)
@@ -497,6 +580,28 @@ def _release_report(rows, build_time, dll):
     return "\n".join(lines)
 
 
+def release_files():
+    """成品区实际要拷的文件清单 = RELEASE_FILES（+ 可选的 MbKit146.dll）。
+
+    返回 (files, notes)：notes 是「没纳入/跳过的可选件」说明，只提示、不中断构建。
+    """
+    files = list(RELEASE_FILES)
+    notes = []
+    if RELEASE_MBKIT_DLL is None:
+        found = [str(p) for p in MBKIT_DLL_CANDIDATES if p is not None and p.exists()]
+        tail = ("；预置候选里已有 %s，需要随包分发就把 RELEASE_MBKIT_DLL 指过去" % found[0]) if found \
+            else "；预置候选里没找到，需要随包分发就把 RELEASE_MBKIT_DLL 指向实际的 DLL"
+        notes.append("未纳入 MbKit146.dll（webui 的运行时内核，分发与否由发布负责人决定）" + tail)
+    else:
+        src = Path(RELEASE_MBKIT_DLL)
+        if src.exists():
+            files.append((src, RELEASE_TOOLS_SUB + "/" + src.name))
+            notes.append("已纳入 %s（webui 内核 %s 字节）" % (src.name, src.stat().st_size))
+        else:
+            notes.append("RELEASE_MBKIT_DLL 指向的 %s 不存在，已跳过（webui 将不可用）" % src)
+    return files, notes
+
+
 def assemble_releases(dry_run=False):
     """组装 Releases/ 成品区。返回 True 表示成功（或 dry-run 计划已打印）。"""
     # 安全闸：只允许操作 <SDK 根>\Releases，杜绝 Path 拼错时误删别处
@@ -504,7 +609,8 @@ def assemble_releases(dry_run=False):
         log("[错误] 拒绝操作：目标目录异常 %s" % RELEASES)
         return False
 
-    miss = [str(src) for src, _dst in RELEASE_FILES if not src.exists()]
+    files, notes = release_files()
+    miss = [str(src) for src, _dst in files if not src.exists()]
     if not SHELL_DLL.exists():
         miss.append(str(SHELL_DLL))
     if not PROMPT_SRC.exists():
@@ -514,6 +620,9 @@ def assemble_releases(dry_run=False):
         for m in miss:
             log("   - %s" % m)
         return False
+
+    for n in notes:
+        log("[提示] %s" % n)
 
     build_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dll_sha = sha256_file(SHELL_DLL)
@@ -527,7 +636,7 @@ def assemble_releases(dry_run=False):
 
     if dry_run:
         log("[计划组装] %s" % RELEASES)
-        for src, dst in RELEASE_FILES:
+        for src, dst in files:
             log("       %-34s <- %s" % (dst, src))
         log("       %-34s <- %s（路径改写）" % (RELEASE_PROMPT_NAME, PROMPT_SRC))
         log("       %-34s <- 自动生成（含 sha256 指纹）" % RELEASE_README_NAME)
@@ -543,7 +652,7 @@ def assemble_releases(dry_run=False):
 
     try:
         rows = []
-        for src, dst in RELEASE_FILES:
+        for src, dst in files:
             target = tmp / dst
             target.parent.mkdir(parents=True, exist_ok=True)   # 包内路径可能带子目录
             shutil.copy2(src, target)

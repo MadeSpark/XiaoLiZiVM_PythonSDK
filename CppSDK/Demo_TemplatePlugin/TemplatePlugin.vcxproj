@@ -61,6 +61,7 @@
     <ClCompile Include="..\src\xlz_appinfo.cpp" />
     <ClCompile Include="..\src\xlz_encoding.cpp" />
     <ClCompile Include="..\src\xlz_sdk.cpp" />
+    <ClCompile Include="..\src\xlz_webui.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\include\xlz_api.h" />
@@ -70,6 +71,7 @@
     <ClInclude Include="..\include\xlz_events.h" />
     <ClInclude Include="..\include\xlz_exports.h" />
     <ClInclude Include="..\include\xlz_sdk.h" />
+    <ClInclude Include="..\include\xlz_webui.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="exports.def" />

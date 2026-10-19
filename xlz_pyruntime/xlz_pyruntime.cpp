@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include <ctime>
 #include <cstring>
 
@@ -36,13 +37,31 @@ static HMODULE g_python_dll = nullptr;
 static std::atomic<int> g_py_initialized(0);
 static std::atomic<int> g_log_reset_done(0);
 
-// 日志文件路径
+// 日志文件路径：优先放在 DLL 所在目录（不依赖进程当前工作目录）
 static const wchar_t* kLogFilePath = L"main\\corn\\xlz_pyruntime.log";
+
+static bool GetCurrentDllDirectory(wchar_t* outPath, size_t maxLen);
+
+static const std::wstring& LogFilePath()
+{
+	// C++11 起函数内 static 局部变量的初始化是线程安全的，多个插件线程同时写日志也不会竞争。
+	static const std::wstring path = []() -> std::wstring {
+		wchar_t dir[MAX_PATH] = {0};
+		if (GetCurrentDllDirectory(dir, MAX_PATH))
+		{
+			std::wstring p(dir);
+			p += L"xlz_pyruntime.log";
+			return p;
+		}
+		return std::wstring(kLogFilePath);
+	}();
+	return path;
+}
 
 // 写日志函数
 static void WriteLog(const char* message)
 {
-	std::ofstream log(kLogFilePath, std::ios::app);
+	std::ofstream log(LogFilePath().c_str(), std::ios::app);
 	if (log.is_open())
 	{
 		// 获取当前时间
@@ -63,7 +82,7 @@ static void ResetLogOnFirstUse()
 	int expected = 0;
 	if (g_log_reset_done.compare_exchange_strong(expected, 1))
 	{
-		std::ofstream log(kLogFilePath, std::ios::trunc);
+		std::ofstream log(LogFilePath().c_str(), std::ios::trunc);
 		if (log.is_open())
 		{
 			log.close();
@@ -137,11 +156,11 @@ static int LoadPythonDll(void)
 {
 	if (g_python_dll != nullptr)
 	{
-		WriteLog("LoadPythonDll: python310.dll already loaded");
+		WriteLog("LoadPythonDll: python314t.dll already loaded");
 		return 0;  // 已加载
 	}
 
-	WriteLog("LoadPythonDll: attempting to load python310.dll");
+	WriteLog("LoadPythonDll: attempting to load python314t.dll");
 
 	// 获取当前DLL的路径
 	wchar_t dllPath[MAX_PATH];
@@ -168,9 +187,10 @@ static int LoadPythonDll(void)
 	WriteLog(oss.str().c_str());
 
 	// 先显式加载 Python 依赖
-	if (!LoadDependencyFromDir(pythonDir, L"python3.dll", true))
+	// 3.14t 没有 python3.dll，稳定 ABI 转发 DLL 名为 python3t.dll
+	if (!LoadDependencyFromDir(pythonDir, L"python3t.dll", true))
 	{
-		WriteLog("LoadPythonDll: missing required dependency python3.dll");
+		WriteLog("LoadPythonDll: missing required dependency python3t.dll");
 		return -1;
 	}
 	if (!LoadDependencyFromDir(pythonDir, L"vcruntime140.dll", true))
@@ -186,14 +206,15 @@ static int LoadPythonDll(void)
 	{
 		WriteLog("LoadPythonDll: optional dependency msvcp140.dll not loaded");
 	}
-	if (!LoadDependencyFromDir(pythonDir, L"libffi-7.dll", false))
+	// 3.14t 的 libffi 位于 DLLs 子目录，且版本为 8
+	if (!LoadDependencyFromDir(pythonDir, L"DLLs\\libffi-8.dll", false))
 	{
-		WriteLog("LoadPythonDll: optional dependency libffi-7.dll not loaded");
+		WriteLog("LoadPythonDll: optional dependency DLLs\\libffi-8.dll not loaded");
 	}
 
-	// 构建python310.dll的完整路径
+	// 构建python314t.dll的完整路径
 	wchar_t pythonDllPath[MAX_PATH];
-	swprintf_s(pythonDllPath, MAX_PATH, L"%spython310.dll", pythonDir);
+	swprintf_s(pythonDllPath, MAX_PATH, L"%spython314t.dll", pythonDir);
 
 	std::ostringstream oss2;
 	oss2 << "LoadPythonDll: loading from path: ";
@@ -207,18 +228,18 @@ static int LoadPythonDll(void)
 	}
 	WriteLog(oss2.str().c_str());
 
-	// 加载python310.dll
+	// 加载python314t.dll
 	g_python_dll = ::LoadLibraryW(pythonDllPath);
 	if (g_python_dll == nullptr)
 	{
 		DWORD err = ::GetLastError();
 		std::ostringstream errOss;
-		errOss << "LoadPythonDll: failed to load python310.dll, error code: " << err;
+		errOss << "LoadPythonDll: failed to load python314t.dll, error code: " << err;
 		WriteLog(errOss.str().c_str());
 		return -1;  // 加载失败
 	}
 
-	WriteLog("LoadPythonDll: python310.dll loaded successfully");
+	WriteLog("LoadPythonDll: python314t.dll loaded successfully");
 
 	// 获取函数指针
 	g_Py_Initialize = reinterpret_cast<Py_Initialize_t>(
@@ -296,12 +317,14 @@ __declspec(dllexport) int __stdcall XLZ_PyInitialize(void)
 		return -1;
 	}
 
-	// 构建Python路径：corn\python\python310.zip和python目录
+	// 构建Python路径：corn\python\Lib、corn\python\DLLs 和 corn\python
+	// 3.14t 的完整安装树没有 python3XX.zip / ._pth，标准库在 Lib\，扩展在 DLLs\。
 	wchar_t pythonDir[MAX_PATH];
 	swprintf_s(pythonDir, MAX_PATH, L"%spython\\", dllDir);
 
-	wchar_t pythonPath[MAX_PATH * 2];
-	swprintf_s(pythonPath, MAX_PATH * 2, L"%spython310.zip;%s", pythonDir, pythonDir);
+	wchar_t pythonPath[MAX_PATH * 4];
+	swprintf_s(pythonPath, MAX_PATH * 4, L"%sLib;%sDLLs;%sLib\\lib-dynload;%s",
+		pythonDir, pythonDir, pythonDir, pythonDir);
 
 	std::ostringstream oss;
 	oss << "XLZ_PyInitialize: setting Python path to: ";
@@ -386,7 +409,7 @@ __declspec(dllexport) int __stdcall XLZ_PyFinalize(void)
 	}
 
 	// 卸载Python DLL
-	WriteLog("XLZ_PyFinalize: unloading python310.dll");
+	WriteLog("XLZ_PyFinalize: unloading python314t.dll");
 	if (g_python_dll != nullptr)
 	{
 		::FreeLibrary(g_python_dll);

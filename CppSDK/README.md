@@ -42,16 +42,22 @@ SDK 的 stdcall 调用器基于 x86 汇编实现，必须使用 32 位编译：
 
 ## 目录结构
 
-- `include\\`：SDK 头文件（对外接口、权限枚举、文本编码转换、事件结构体等）
-- `src\\`：SDK 实现（x86 stdcall 通用调用器、apidata 地址解析、编码转换、AppInfo JSON 构造）
-- `TemplatePlugin\\`：调用模板（Win32 DLL，导出 `apprun` 与各类回调）
+- `include\\`：SDK 头文件（对外接口、权限枚举、文本编码转换、事件结构体等），共 17 个 `.h`
+- `src\\`：SDK 实现（x86 stdcall 通用调用器、apidata 地址解析、编码转换、AppInfo JSON 构造），共 5 个 `.cpp`
+- `Demo_TemplatePlugin/`：调用模板（Win32 DLL，导出 `apprun` 与各类回调；工程已含 `src` 全部实现）
+- `Demo_WebUI/`：webui（内嵌浏览器）示例插件，见下文「内嵌浏览器（webui，可选）」
+- `tools/`：辅助脚本（`build_releases.py` 生成 `Releases/`、`check_webui_exports.py` 校验内核导出名）
+- `Releases/`：发布包（由 `tools/build_releases.py` 生成，勿手改）
 
 ## 编译要求（必须是 32 位）
 
 - Visual Studio 2019/2022（需安装 C++ 桌面开发组件）
 - 需要能使用 Win32(x86) 工具链（cl/link）
+- 工具集：工程默认 `v142`（VS2019）；机器上只有 `v143` 时用 msbuild `/p:PlatformToolset=v143` 覆盖，**不用改工程文件**
 
-说明：当前环境中未检测到 `msbuild`，如果你希望命令行编译，请安装 **Visual Studio Build Tools** 并确保 `msbuild` 在 PATH 中。
+说明：`msbuild` 默认不在 PATH 中，直接给全路径即可，例如
+`"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe"`；
+命令行编译示例见「编译 Demo_WebUI」一节。
 
 ## 编码约定（重点）
 
@@ -250,5 +256,199 @@ XLZ_API int XLZ_CALL RecviceGroupMesg(void* data)
 Python 端对应模块为 `xlz_constants.py`，成员名由同名 `PascalCase` 自动转 `UPPER_SNAKE_CASE`
 （`GroupEvent::MemberJoined` → `GroupEvent.MEMBER_JOINED`）。
 
+## 内嵌浏览器（webui，可选）
 
+需要「在插件里显示网页 / 用 HTML+JS 做界面」时才用。相关文件：
 
+- [xlz_webui.h](include/xlz_webui.h) / [xlz_webui.cpp](src/xlz_webui.cpp)：把易语言「MB浏览框」的核心命令移植为
+  `xlz::wke::XlzWebView` + 一组全局函数
+- [Demo_WebUI/](Demo_WebUI/)：可编译运行的示例插件（建窗 → Bind → 载页面 → 三步卸载）
+- [tools/check_webui_exports.py](tools/check_webui_exports.py)：静态校验「代码里用到的内核导出名」全在
+  `gen_fwd.def` 里（零拼错容忍）
+
+这一层**不链接任何内核 lib**：内核一律经 `MbKit146.dll` 的朴素名 stdcall 导出
+（MinGW `-Wl,--kill-at`，无 `@N` 修饰）用 `GetProcAddress` 动态解析；`MbKit146.dll` 缺失时
+返回 `WebUiError::HostDllNotFound` 而**不是**加载失败 —— 所以工程里带上 `xlz_webui.cpp`
+也不会让不用 webui 的插件多出运行期依赖（只是 DLL 大一点）。
+
+### 最小可用例子
+
+```cpp
+#include "xlz_webui.h"
+
+static xlz::wke::XlzWebView g_webView;
+static std::atomic<bool> g_uninstalling{ false };
+
+static void OnDocReady(const xlz::wke::XlzWebView::DocumentReady2Event& ev)
+{
+    if (g_uninstalling.load()) return;          // ★ 卸载期间直接返回
+    (void)ev;
+}
+
+static int64_t NativeFn(int64_t es)
+{
+    if (g_uninstalling.load()) return 0;
+    const std::string s = xlz::wke::JsArgToStringUtf8(es, 0);   // 取第 0 个参数
+    return xlz::wke::JsStringW(("来自原生：" + s).c_str());       // 回一个 jsValue
+}
+
+// 在插件启用回调（宿主 UI 线程）里：
+void StartWebUi()
+{
+    using namespace xlz::wke;
+
+    MbKitLib::Instance().EnsureLoaded();          // ① 载入 MbKit146.dll（幂等）
+    Initialize();                                 // ② 登记内核初始化（异步，不阻塞）
+    WaitKernelReady(20000);                       // ③ 等内核就绪（★ 不许在 DllMain 里调）
+
+    HWND hwnd = /* 承载窗口：框架主窗口或自己 CreateWindowExW 出来的窗口 */;
+    g_webView.Bind(hwnd, false);                  // ④ 建 view 并绑定窗口（★ 必须在窗口创建线程）
+
+    g_webView.OnDocumentReady2(OnDocReady);
+    g_webView.JsBindFunction("nativeFn", NativeFn, 1);   // 名字只能 ASCII
+    g_webView.LoadHtml("<button onclick=\"nativeFn('hi')\">调原生</button>");
+}
+```
+
+`Demo_WebUI/plugin.cpp` 里是一份更完整的例子（四类事件回调 + 承载窗口 + 标准卸载顺序）。
+
+### 方法一览
+
+全局函数（`xlz::wke::`）：
+
+| 函数 | 说明 |
+|---|---|
+| `MbKitLib::Instance().EnsureLoaded()` | 载入/复用 `MbKit146.dll`；失败给出 `LastLoadError()` |
+| `Initialize(bool threadRepaint = false)` | 对应 `WKE初始化`；**只登记不等待**（内部会调 `MbKit_EnsureKernelInit`） |
+| `WaitKernelReady(int32_t timeoutMs = 0)` | 对应 `WKE等待内核就绪`；`0` = 用内核默认超时。**禁止在 DllMain 里调** |
+| `GetKernelBootState()` / `GetKernelMode()` | 内核启动状态（0..3）/ 内核模式（node.dll、edgewebview） |
+| `SelfDiag()` / `GetWebView2Diag()` / `IsWebView2Supported()` | 排障第一入口：一行式自检 / WebView2 诊断 / 环境探测 |
+| `SetNodePath(path, &why, forceNodeKernel=false)` | 对应 `WKE设置node路径`，必须在内核启动前调 |
+| `DetachAll()` | 对应 `WKE全解绑`：解绑+销毁本进程全部 view，返回清理数量。**禁止在 DllMain 里调** |
+| `SetUnloading(bool)` / `IsUnloading()` | 卸载标志；所有 webui 回调进来先看它 |
+
+`XlzWebView`（一个实例 = 一个 view，可重复 `Bind`）：
+
+| 方法 | 说明 |
+|---|---|
+| `Bind(void* hwnd, bool transparent = false)` | 对应 `绑定`：`wkeCreateWebView` + `wkeSetHandle`；`hwnd=nullptr` 为无窗口（仅初始化） |
+| `Destroy()` | 对应 `销毁`：先撤回调 thunk 再销毁 view；销毁后**绝不会**再进用户回调 |
+| `LoadUrl` / `LoadFile` / `LoadHtml` / `LoadHtmlWithBaseUrl` | 四种载入方式（入参 UTF-8，内部走 `*W`） |
+| `RunJs(js)` / `RunJsByFrame(frame, js)` | 运行 JS，返回 `jsValue`（0 = 失败/未绑定） |
+| `JsBindFunction(name, fn, argc)` | 把原生函数暴露给网页；`fn` 的存活期由本对象持有 |
+| `OnDocumentReady2` / `OnConsole` / `OnLoadingFinish` / `OnTitleChanged` | 四类事件；传 `nullptr`/空函数即取消 |
+| `JsArgCount` / `JsArgToStringUtf8` / `JsArgToInt` / `JsStringW` / `JsToStringUtf8` | JS 取参/回值薄封装（在 `JsBindFunction` 回调里用） |
+| `Reload` / `StopLoading` / `GoBack` / `GoForward` | 导航控制 |
+| `GetUrl` / `GetTitle` / `GetSource` / `IsDocumentReady` / `GetHostWindow` | 读页面信息 |
+| `Resize(w, h)` / `IsValid()` | 改大小 / 判断 view 是否仍有效 |
+
+失败一律返回 `WebUiError`（`Ok`、`NoKernelDll`、`MissingSymbol`、`BadParam`、`BadState`、
+`HostDllNotFound`、`HostDllLoadFailed`、`ViewNotBound`、`NotOnOwnerThread` …），**不会空指针调内核**。
+
+### 三条必须守住的规则
+
+1. **线程铁律**：`Bind()` 必须在**承载窗口的创建线程**上调用（通常是宿主 UI 线程，也就是
+   `apprun` / 各回调所在的线程）—— 在回调里直接调是对的。**绝对不要**丢进 `std::thread` /
+   线程池 / 自己起的消息线程：那是灰屏（白屏）的经典原因。跨线程想动已建好的 view，
+   用 `PostMessage` 投递回宿主 UI 线程执行。`Bind()` 会比对窗口创建线程与当前线程，
+   不一致返回 `WebUiError::NotOnOwnerThread`。
+2. **入口顺序**：`EnsureLoaded()` → `Initialize()` → `WaitKernelReady()` → 建承载窗口 →
+   `Bind(hwnd)` → 注册事件 / `JsBindFunction` → `Load*`。要立刻执行 JS 必须等
+   `OnDocumentReady2` 回调，之前 DOM 还没生成（此时可用 `RunJsByFrame`）。
+   `Bind()` 内部会幂等地再调一次 `Initialize()`，所以省略 ②③ 也能跑，但**在 UI 线程里等一次
+   `WaitKernelReady` 体验更好**（首帧白屏时间短）。
+3. **热重载契约**：插件卸载回调（`AppUninstall` / `AppDisabled`）里的顺序不能换 ——
+   ① 先立卸载标志 `SetUnloading(true)`，并**停掉一切会碰窗口的定时器 / 线程 / 任务**
+   （`KillTimer`、置停止位并 `join`）；
+   ② 再逐个 `XlzWebView::Destroy()`（撤回调 → 销毁 view）；
+   ③ 最后 `DetachAll()`（内核全解绑，内核保持已初始化），如有自建窗口再 `DestroyWindow`；
+   **窗口销毁后绝不再访问其任何控件**。
+   所有 webui 回调（`On*`、`JsBindFunction`）入口先查卸载标志，是卸载中**立刻返回**。
+   > ★ 实测坑（真机复现）：卸载期间若定时器回调还在碰已销毁的窗口控件，运行时会报
+   > 「指定窗口或窗口组件不存在或尚未载入」—— 这条错误十有八九不是 webui 的锅，而是
+   > 「窗口已销毁但还有代码在访问它」。排查顺序：定时器有没有停 → 回调有没有先查卸载标志。
+
+```cpp
+void StopWebUi()   // 插件卸载回调里调
+{
+    xlz::wke::SetUnloading(true);   // ① 立标志：回调自此直接返回
+    g_uninstalling.store(true);
+    // ① 停定时器/线程：KillTimer(hwnd, kTimerId); worker.join();
+
+    g_webView.Destroy();            // ② 销毁自己创建的 view
+    if (g_hostWnd != nullptr)
+    {
+        ::DestroyWindow(g_hostWnd); // ③ 自建承载窗口一并销毁
+        g_hostWnd = nullptr;
+    }
+    xlz::wke::DetachAll();          // ③ 内核全解绑
+
+    xlz::wke::SetUnloading(false);  // 解除标志（下次启用还能用）
+    g_uninstalling.store(false);
+}
+```
+
+### `MbKit146.dll` 的放置与版本
+
+- **放哪**：`<宿主 exe 目录>\MbKit146.dll`（框架/易语言模块用同一份）。SDK 的查找顺序是
+  `SetKernelBlob()` 注入的内存映像 → `SetKernelSourceDir()` 指定的旁路目录 →
+  **宿主 exe 目录** → `%TEMP%\ElangMbKit\MbKit146.dll` → 裸名（系统搜索序，含「已被进程载入」的命中）。
+  找不到不崩：`EnsureLoaded()` 返回 `HostDllNotFound`，`LastLoadError()` 里列出试过的路径。
+- **更新时按内容比对**：换内核**不能只比文件大小或时间戳**（历史事故：同尺寸的旧 DLL 覆盖了新内核，
+  导致 WebView2 永不初始化）。正确做法是逐字节比对；文件被占用写不进去时，用已载入的那份并记告警。
+- **版本钉住**：本 SDK 对齐 **`MbKit/1.4.5`**。载入后读 `MbKit_Version()` 校验，
+  版本串不含 `MbKit/1.4.5` 时 `MbKitLib::VersionWarning()` 给出提示（`SelfDiag()` 会带在头部）——
+  这通常意味着**进程里已经有一份别的内核**先载入了。
+- **全进程只有一份**：Windows 按**基名**命中已载入模块、且**先载入的那份生效**，路径不参与判定。
+  所以多个插件各带一份 `MbKit146.dll` 时只有第一份有效；想升级内核只能**改名（如 MbKit147.dll）
+  或重启宿主 exe**。`MbKit_Version()` 在**内核启动之前返回空串**，别在 `apprun` 里断言版本。
+- 内核是 **32 位（Win32）**，必须与框架 / 插件同为 32 位环境。`MbKit146.dll` 不随本 SDK 的
+  `Releases/` 一起分发（成品区只放源码与工程），请从内核发布处单独获取。
+
+### 已知限制（如实记录）
+
+- 内核**一个进程只有一份**，换内核只能重启宿主 exe。
+- **快速连续热重载插件（约 5 次）** 仍可能让宿主崩在 `win32u.dll+0x11cc` —— 属于内核侧
+  WebView2 异步释放的竞态（`WM_DESTROY` 与 `Release` 竞争），插件侧无法兜住，目前只能
+  「别连着重载」。
+- view 销毁是**延迟回收**（约数百毫秒），刚 `Destroy()` 的窗口不要立刻复用。
+- 只有**窗口模式**（`Bind(hwnd)`）经过验证；`hwnd=nullptr` 的无窗口模式仅能初始化内核，不保证渲染。
+- `JsBindFunction` 的函数名只能是 ASCII 字母 / 数字 / 下划线；webui 回调在宿主 UI 线程上跑，
+  **别在回调里做耗时操作**（要做得自己投递到工作线程）。
+
+### 编译 Demo_WebUI
+
+工程默认工具集是 `v142`（VS2019）。没装 VS2019 时用 `/p:PlatformToolset=v143`（或 `v145`）覆盖即可，
+不必改工程文件：
+
+```bat
+"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" ^
+  Demo_WebUI\WebUIDemo.vcxproj /p:Configuration=Release /p:Platform=Win32 ^
+  /p:PlatformToolset=v143
+```
+
+产物：`Demo_WebUI\bin\Release\XiaoLiZiVM_CppSDK_WebUI.dll`（编译产物，不提交；`bin\obj\` 已忽略）。
+
+**已验证**：`/p:PlatformToolset=v145`（VS 18 / MSVC 14.44）下编译链接通过，仅 2 条
+`C4244`（`int64_t`→`int32_t` 参数截断）警告，无错误。**未验证**：运行时渲染 ——
+需要 `MbKit146.dll`，且该内核不随本 SDK 分发。
+
+### 已知状态（如实记录）
+
+- `CppSDK\Demo_TemplatePlugin`、`Demo_关键词回复`、`Demo_WebUI` 三个工程都钉 `v142`（VS2019）。
+  没有 VS2019 时 MSBuild 会报 `MSB8020`，必须显式覆盖工具集。
+- 仓库内 `Demo_TemplatePlugin\bin\Release\XiaoLiZiVM_CppSDK_Template.dll` 是 **2026-03-03 的旧构建**，
+  早于本次新增的 `src\xlz_webui.cpp`；`TemplatePlugin.vcxproj` 已把该源码加入编译项，
+  因此**工程文件与这份预编译 DLL 不对应**。因为模板 `plugin.cpp` 并不调用 WebUI，
+  运行行为不受影响；需要与工程一致的成品请自行重编（`/p:PlatformToolset=v145` 已验证可编译通过）。
+- `Demo_关键词回复\KeywordReply.vcxproj` **没有**加入 `xlz_webui.cpp`（两个 C++ demo 目前不一致），
+  它同样不调用 WebUI。
+- `Demo_WebUI` 不提供预编译 DLL（`MbKit146.dll` 不随 SDK 分发，带成品也无从运行）。
+
+自检（离线，不启动宿主）：
+
+```bat
+:: gen_fwd.def 是 MbKit146.dll 的权威导出清单，由发布方提供，不在本仓库内。
+:: 用参数传入，或设环境变量 MBKIT_DEF 指向它。
+python tools\check_webui_exports.py src\xlz_webui.cpp D:\path\to\gen_fwd.def
+```

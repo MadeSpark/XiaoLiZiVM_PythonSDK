@@ -5,6 +5,7 @@
 
 - **`Demo_TemplatePlugin`**：最基础的调用模板示例（导出 `apprun` 与基础回调）。  
 - **`Demo_关键词回复`**：一个简单的“关键词回复”插件示例，可以参考其处理消息事件、发送群消息等写法。
+- **Demo_WebUI**：内嵌浏览器（webui）示例插件，含承载窗口、四类事件、JS 调原生函数与标准卸载顺序。
 
 现在请你根据上述 SDK 结构和示例，**用 C++ 编写一个新的小栗子 QQ 机器人框架插件**，并同时生成完整的 Visual Studio 工程（`.sln` / `.vcxproj` 等），满足以下功能与格式要求。
 
@@ -28,7 +29,7 @@
 
 - **SDK 使用**
   - 插件工程必须基于本仓库的 SDK（`include/` 与 `src/`）进行开发。
-  - 导出并正确实现 `apprun` 以及各类事件回调（例如：`RecvicePrivateMsg`、`RecviceGroupMesg`、`RecviceEventCallBack`、`RotbotAppEnable` 等），参考 `TemplatePlugin` 与 `Demo_关键词回复` 的写法。
+  - 导出并正确实现 `apprun` 以及各类事件回调（例如：`RecvicePrivateMsg`、`RecviceGroupMesg`、`RecviceEventCallBack`、`RotbotAppEnable` 等），参考 `Demo_TemplatePlugin` 与 `Demo_关键词回复` 的写法。
 
 - **编码约定**
   - 插件内部统一使用 **UTF-8** 处理文本。
@@ -74,6 +75,36 @@
 
 - 必须使用 **Win32(x86)** 平台进行编译（禁止使用 x64），与 `README.md` 中的说明保持一致。
 - 工程需适配 **Visual Studio 2019/2022**，并满足“C++ 桌面开发”环境下可直接编译。
+
+---
+
+### 5. 内嵌浏览器（webui，可选）
+
+**仅在需求里出现“显示网页 / 用 HTML+JS 做界面 / 内嵌浏览器”时才做这一节**，否则整节跳过。
+
+- **要加进工程的源文件**：`src/xlz_webui.cpp` 与 `include/xlz_webui.h`（前者必须参与编译，否则链接不到 `xlz::wke`）。
+  这一层不链接内核 lib：内核经 `MbKit146.dll` 的朴素名导出用 `GetProcAddress` 动态解析，缺 DLL 时返回 `HostDllNotFound` 而不是崩溃。
+- **命名空间**：全局函数在 `xlz::wke::`（`Initialize`、`WaitKernelReady`、`DetachAll`、`SelfDiag`、`JsStringW` …），
+  视图类是 `xlz::wke::XlzWebView`（`Bind`/`Destroy`/`LoadHtml`/`RunJs`/`JsBindFunction`/`On*` 事件）。
+- **入口顺序（照抄，不要调换）**：
+  `MbKitLib::Instance().EnsureLoaded()` → `Initialize()` → `WaitKernelReady(20000)` → 建承载窗口 → `Bind(hwnd)` → 注册事件 / `JsBindFunction` → `Load*`。
+- **线程铁律**：`Bind()` 必须在**承载窗口的创建线程**上调用（就是宿主调 `apprun`/回调的 UI 线程）。
+  **禁止**放进 `DllMain`，**禁止**丢进 `std::thread`/线程池（否则灰屏 / `NotOnOwnerThread`）；
+  跨线程操作 view 一律 `PostMessage` 回 UI 线程。`DllMain` 里也**不许**调 `WaitKernelReady` / `DetachAll` / 建窗。
+- **热重载契约（三步，顺序不能换）**：在 `AppUninstall` / `AppDisabled` 里
+  ① `xlz::wke::SetUnloading(true)` + 停掉一切会碰窗口的定时器/线程/任务（`KillTimer`、置停止位并 join）；
+  ② 逐个 `XlzWebView::Destroy()`；
+  ③ 最后 `xlz::wke::DetachAll()`，自建承载窗口再 `DestroyWindow`。
+  **窗口销毁后绝不再访问其任何控件**；所有事件回调与 `JsBindFunction` 入口先查 `IsUnloading()`/自己的卸载标志，卸载中直接 `return`。
+  > 实测坑：卸载期间定时器回调还在碰已销毁的控件 → 运行时抛「指定窗口或窗口组件不存在或尚未载入」。
+  > 见到这条错误先查“定时器停没停 / 回调查没查卸载标志”，别先怀疑 webui。
+- **`MbKit146.dll` 的分发**：放到 **宿主 exe 目录**（`<框架目录>\MbKit146.dll`），版本与本 SDK 对齐 **`MbKit/1.4.5`**（`VersionWarning()`/`SelfDiag()` 会提示）；
+  更新时按**文件内容逐字节比对**，不能只比大小/时间戳；**全进程只有一份**（Windows 按基名命中，先载入的生效），想换内核只能改名或重启宿主。
+  插件工程里**不要**把 `MbKit146.dll` 打进发布包。
+- **已知限制（实现方案要绕开）**：内核一进程一份；快速连续热重载约 5 次仍可能崩在 `win32u.dll`（内核侧竞态，插件无法兜住）；
+  view 销毁是延迟回收，刚销毁的窗口不要立刻复用；`JsBindFunction` 的函数名只能 ASCII；webui 回调在 UI 线程跑，**别在回调里做耗时操作**。
+- **自查**：交付前跑 `python tools\check_webui_exports.py src\xlz_webui.cpp <gen_fwd.def>`，确认用到的内核导出名零拼错；
+  编译用 `/p:PlatformToolset=v143`（机器上只有 v143 时），生成 `Win32` + `Release` 的 DLL。
 
 ---
 

@@ -93,14 +93,10 @@ using PyRun_SimpleString_t = int(*)(const char*);
 using PyGILState_STATE = int;
 using PyGILState_Ensure_t = PyGILState_STATE(*)();
 using PyGILState_Release_t = void(*)(PyGILState_STATE);
-using PyGILState_Check_t = int(*)();
-using PyEval_SaveThread_t = void*(*)();
 static XLZ_PyInitialize_t g_XLZ_PyInitialize = nullptr;
 static PyRun_SimpleString_t g_PyRun_SimpleString = nullptr;
 static PyGILState_Ensure_t g_PyGILState_Ensure = nullptr;
 static PyGILState_Release_t g_PyGILState_Release = nullptr;
-static PyGILState_Check_t g_PyGILState_Check = nullptr;
-static PyEval_SaveThread_t g_PyEval_SaveThread = nullptr;
 
 static std::string Utf8ToAcpLossy(const std::string& s)
 {
@@ -373,12 +369,9 @@ static bool RunPy(const std::string& code)
 {
 	if(!g_PyRun_SimpleString) { ForceLog("RunPy failed: PyRun_SimpleString null"); return false; }
 	if(!g_PyGILState_Ensure || !g_PyGILState_Release){ ForceLog("RunPy failed: GIL funcs null"); return false; }
-	if(g_PyGILState_Check && g_PyGILState_Check()){
-		const int r = g_PyRun_SimpleString(code.c_str());
-		const bool ok = (r==0);
-		if(!ok) ForceLog(std::string("RunPy failed rc=")+std::to_string(r));
-		return ok;
-	}
+	// 3.14t 自由线程构建中 PyGILState_Check() 恒返回 1，不能据此跳过 Ensure：
+	// 宿主线程未附着 Python 线程状态时直接 PyRun_SimpleString 会崩溃。
+	// PyGILState_Ensure/Release 在 GIL 构建与自由线程构建下都可安全重入。
 	const PyGILState_STATE st = g_PyGILState_Ensure();
 	const int r = g_PyRun_SimpleString(code.c_str());
 	g_PyGILState_Release(st);
@@ -425,9 +418,9 @@ static bool InitPythonBridge()
 		pyInitRet = g_XLZ_PyInitialize();
 	}
 	DebugLog(std::string("InitPythonBridge: XLZ_PyInitialize ret=")+std::to_string(pyInitRet));
-	HMODULE hPy=::GetModuleHandleW(L"python310.dll");
-	if(!hPy) hPy=::LoadLibraryW(L"python310.dll");
-	if(!hPy){ DebugLog("InitPythonBridge: python310.dll not loaded"); return false; }
+	HMODULE hPy=::GetModuleHandleW(L"python314t.dll");
+	if(!hPy) hPy=::LoadLibraryW(L"python314t.dll");
+	if(!hPy){ DebugLog("InitPythonBridge: python314t.dll not loaded"); return false; }
 	wchar_t pyPathW[MAX_PATH] = {};
 	if(::GetModuleFileNameW(hPy, pyPathW, MAX_PATH)){
 		std::string pyPathUtf8 = WU8(pyPathW);
@@ -438,16 +431,10 @@ static bool InitPythonBridge()
 	g_PyRun_SimpleString=(PyRun_SimpleString_t)::GetProcAddress(hPy,"PyRun_SimpleString");
 	g_PyGILState_Ensure=(PyGILState_Ensure_t)::GetProcAddress(hPy,"PyGILState_Ensure");
 	g_PyGILState_Release=(PyGILState_Release_t)::GetProcAddress(hPy,"PyGILState_Release");
-	g_PyGILState_Check=(PyGILState_Check_t)::GetProcAddress(hPy,"PyGILState_Check");
-	g_PyEval_SaveThread=(PyEval_SaveThread_t)::GetProcAddress(hPy,"PyEval_SaveThread");
 	const bool ok = g_PyRun_SimpleString!=nullptr && g_PyGILState_Ensure!=nullptr && g_PyGILState_Release!=nullptr;
-	// 自由线程关键：初始化后必须释放 GIL，否则只有初始化线程能跑 Python，
-	// 其他线程（含插件自建线程、异步工作线程）会永远阻塞在 PyGILState_Ensure。
-	// xlz_pyruntime 已在 Py_Initialize 后释放；这里再兜底一次（幂等：仅当本线程确实持有 GIL 时才释放）。
-	if(ok && g_PyEval_SaveThread && g_PyGILState_Check && g_PyGILState_Check()){
-		g_PyEval_SaveThread();
-		ForceLog("InitPythonBridge: released GIL on init thread (free-threading enabled)");
-	}
+	// GIL 释放由 xlz_pyruntime 在 Py_Initialize 后统一完成（3.14t 自由线程构建同样调用
+	// PyEval_SaveThread，但不依赖 GIL 是否启用）。此处不再重复释放：
+	// 3.14t 下 PyGILState_Check() 恒为 1，重复 PyEval_SaveThread 会把线程状态置空并崩溃。
 	DebugLog(std::string("InitPythonBridge done ok=") + (ok?"1":"0"));
 	return ok;
 }

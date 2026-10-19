@@ -1,7 +1,7 @@
 ## 小栗子 QQ 机器人框架 Python 插件开发提示词模板
 
 这是一个 **小栗子 QQ 机器人框架插件的 Python SDK 和 Demo 例子**。  
-你可以先阅读仓库根目录下的 `README.md`，了解 **目录结构、回调约定（`apprun`、群消息/私聊/事件/启用禁用）**、**外部依赖要求（必须 32 位 + CPython 3.10）**、以及 **打包 DLL 的方法（`PythonSDK/tools/pack_payload.py`）**。
+你可以先阅读仓库根目录下的 `README.md`，了解 **目录结构、回调约定（`apprun`、群消息/私聊/事件/启用禁用）**、**外部依赖要求（必须 32 位 + CPython 3.14 自由线程 `cp314t`）**、以及 **打包 DLL 的方法（`PythonSDK/tools/pack_payload.py`）**。
 
 - **`Demo_TemplatePlugin`**：最基础模板，包含标准回调结构和 `xlz_sdk.Bridge` 用法。  
 - **`Demo_关键词回复`**：关键词回复示例，可参考规则匹配、配置读写、消息发送。  
@@ -109,42 +109,44 @@ def on_event_message(ev: dict) -> int:
 ### 5. 外部依赖（重点）
 
 - 如果使用第三方库（如 Pillow、requests 等），必须满足：
-  - **CPython 3.10**
+  - **CPython 3.14 自由线程**（`cp314t`）
   - **win32（32位）**
-- 不能使用 `win_amd64` 或非 cp310 的二进制依赖。
+- 不能使用 `win_amd64`、GIL 版 `cp314` 或 `abi3` 的二进制依赖；`abi3t` 在 3.14.8t 下未验证
+  （没有对应的扩展后缀/轮子标签），请按 `cp314t` 或纯 Python 处理。
 - 依赖应直接放入插件目录（与 `plugin_main.py` 同级或子目录），打包时一起进入 DLL。
 
-获取依赖有两种方式（都要保证 cp310 + win32）：
+获取依赖有两种方式（都要保证 cp314t + win32）：
 
 1. **命令安装**（推荐）
 
 ```bash
-"C:\Python310_32\python.exe" -m pip install pillow \
+"C:\Python314t_32\python.exe" -m pip install pillow \
   --only-binary=:all: \
-  --python-version 3.10 \
+  --python-version 3.14 \
   --platform win32 \
+  --abi cp314t \
   --target MyPlugin/
 ```
 
 2. **PyPI 手动下载**
 
 - 到 PyPI 项目页面下载对应 wheel
-- 文件名必须匹配：`cp310` + `win32`
-- 例如：`xxx-cp310-cp310-win32.whl`
+- 文件名必须匹配：`cp314` + `cp314t` + `win32`
+- 例如：`xxx-cp314-cp314t-win32.whl`
 - 将 wheel 解压到插件目录，或离线安装到插件目录后再打包
 
 ### 5.1 基础库说明（来自解释器，无需重复下载）
 
-标准库随 Python 解释器提供（与你使用的 CPython 3.10 运行时一起存在），不需要单独下载，也不应作为第三方依赖重复打包。
+标准库随 Python 解释器提供（与你使用的 CPython 3.14t 运行时一起存在），不需要单独下载，也不应作为第三方依赖重复打包。
 
 规则：
 
 - 对 `json`、`re`、`pathlib`、`ctypes`、`email` 等标准库，默认视为解释器内置。
 - 只对**第三方依赖**（非标准库）进行安装/下载建议与打包。
-- 如需新增第三方依赖，必须明确告知用户缺少哪些依赖，并给出 `cp310 + win32` 建议包名。
+- 如需新增第三方依赖，必须明确告知用户缺少哪些依赖，并给出 `cp314t + win32` 建议包名。
 - 若依赖需求不确定，也要先向用户说明原因并给出可选依赖清单。
 
-基础库依赖列表（常用标准库，随 CPython 3.10 解释器提供）：
+基础库依赖列表（常用标准库，随 CPython 3.14t 解释器提供）：
 
 | 分类 | 模块 |
 |---|---|
@@ -157,9 +159,56 @@ def on_event_message(ev: dict) -> int:
 | 工具与运行时 | `typing`, `dataclasses`, `functools`, `itertools`, `collections` |
 | 持久化 | `sqlite3`, `pickle`, `shelve` |
 
-> 备注：以上是插件开发常用清单，不是完整标准库；完整列表见 https://docs.python.org/3.10/library/index.html
+> 备注：以上是插件开发常用清单，不是完整标准库；完整列表见 https://docs.python.org/3.14/library/index.html
+>
+> 注意：`distutils`、`imp`、`asynchat`、`asyncore`、`smtpd`（3.12 移除）以及
+> `cgi`、`cgitb`、`pipes`、`telnetlib`、`2to3`/`lib2to3`（3.13 移除）在 3.14t 中不存在，
+> 不要在新插件里 import。
 
-### 6. 打包与交付
+### 6. 内嵌浏览器（webui，可选）
+
+需要「在框架窗口里显示网页 / 用 HTML+JS 做界面」时才用。相关模块是同级的 `xlz_webui.py`
+（模板里已自带，原样使用，不要改它）：它是 `ctypes` 直接调 `MbKit146.dll`（miniblink 内核，
+与易语言 `MB浏览框` 同一套）的封装。
+
+最小用法（**顺序不能变**）：
+
+```python
+from xlz_webui import WebView, MbKitError, MbKitThreadError
+
+hwnd = api.get_framework_main_window_handle()   # 宿主主窗口句柄
+wv = WebView(hwnd)                              # 自动搜索 MbKit146.dll；也可 dll_path=... 或环境变量 XLZ_MBKIT_DLL
+wv.on_document_ready2(lambda url: api.output_log("页面就绪 " + url))
+wv.on_console(lambda lv, text, src, line: api.output_log(text))
+wv.js_bind_function("pyEcho", lambda s: "来自 Python：" + str(s), 1)
+wv.load_html("<h1>hello</h1>")                  # 或 load_url("https://...") / load_file(r"D:\x.html")
+```
+
+必须遵守的三条：
+
+1. **线程铁律**：`WebView(...)` 与 `bind()` 必须在「承载窗口的创建线程」上调用 —— 对宿主窗口
+   就是框架消息线程，即 `on_*` 回调所在线程。**绝对不要**放进 `run_in_thread` / `spawn`，
+   那是灰屏（白屏）的经典原因；本模块会直接抛 `MbKitThreadError`。跨线程操作已建好的 view
+   （例如 `wv.post(fn)`）才允许。
+2. **入口顺序**：构造 → 绑窗口 → 注册事件 / `js_bind_function` → `load_*`。要立刻执行 JS 必须
+   等 `on_document_ready2` 回调，之前 DOM 还没生成。`js_bind_function` 的函数名只能是 ASCII
+   字母 / 数字 / 下划线。
+3. **热重载契约**：`on_uninstall` 里顺序固定为「① 停线程 / 定时器 → ② 销毁 view → ③ 内核全解绑」，
+   即先 `shutdown_threads(wait=False)`，再 `xlz_webui.detach_all()`；每个回调进来先看
+   `xlz_webui.is_unloading()`，是卸载中就直接返回。
+
+其他要点：
+
+- `MbKit146.dll` **不随插件打包**，需与插件 DLL 一起部署（插件目录、宿主目录或
+  `%TEMP%\ElangMbKit`）；找不到会抛 `MbKitNotFoundError` 并列出搜索路径，不会崩插件。
+- 版本要求 `MbKit/1.4.5`；`MbKit_Version()` 在**内核启动前返回空串**，版本校验发生在第一次
+  启动内核之后 —— 不要在 `apprun` 里断言版本。
+- 已知限制：内核一个进程只有一份（换内核只能重启宿主）；约 5 次快速热重载仍可能让宿主崩在
+  `win32u.dll+0x11cc`（内核 WebView2 异步释放竞态，不在 python 侧可控范围）；view 销毁延迟约
+  400 ms 回收；只有窗口模式验证过。
+- 用不上就不要 `import` —— 模板里是注释状态，不影响打包，也不影响其它能力。
+
+### 7. 打包与交付
 
 开发完成后，必须给出可直接执行的打包命令：
 
@@ -197,6 +246,6 @@ python PythonSDK/tools/pack_payload.py \
 
 - 回调签名正确（尤其 `on_enable/on_disable/on_uninstall/on_setting` 为无参数）
 - 权限声明完整
-- 外部依赖符合 **cp310 + win32**
+- 外部依赖符合 **cp314t + win32**（纯 Python 包可为 `py3-none-any`）
 - 能通过 `pack_payload.py` 打包成可加载 DLL
 - 会明确区分标准库与第三方依赖，并在缺依赖时告知用户

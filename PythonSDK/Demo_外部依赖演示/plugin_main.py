@@ -29,7 +29,16 @@ def apprun(ctx: dict) -> dict:
         api.output_log("[Pillow演示] 初始化成功，支持 pillow 图片生成")
     except Exception as e:
         api = None
-        api.output_log(f"[Pillow演示] 初始化失败: {e}")
+        # 此时 api 已为 None，不能再调用 api.output_log，
+        # 否则会二次抛出 AttributeError，导致 apprun 直接失败，
+        # 宿主就会报“初始化函数返回值缺少插件必要信息”。
+        try:
+            import traceback
+            with open(os.path.join(str(_plugin_dir), "debug.log"), "a", encoding="utf-8") as f:
+                f.write(f"[Pillow演示] 初始化失败: {e}\n")
+                traceback.print_exc(file=f)
+        except Exception:
+            pass
 
     return {
         "app_name": "Pillow 外部依赖演示",
