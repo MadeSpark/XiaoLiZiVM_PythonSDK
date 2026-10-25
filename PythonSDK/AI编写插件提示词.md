@@ -199,14 +199,33 @@ wv.load_html("<h1>hello</h1>")                  # 或 load_url("https://...") / 
 
 其他要点：
 
-- `MbKit146.dll` **不随插件打包**，需与插件 DLL 一起部署（插件目录、宿主目录或
-  `%TEMP%\ElangMbKit`）；找不到会抛 `MbKitNotFoundError` 并列出搜索路径，不会崩插件。
+- `MbKit146.dll` **不随插件打包**，需与插件 DLL 一起部署到插件目录或宿主 exe 目录；也可用环境变量
+  `XLZ_MBKIT_DLL` 或 `WebView(dll_path=...)` 明确指定。框架只把内核释放到运行时/exe 目录，且进程里已载入的
+  `MbKit146.dll` 必须与框架内置内核逐字节相同，否则拒绝加载；找不到会抛 `MbKitNotFoundError` 并列出搜索路径，不会崩插件。
 - 版本要求 `MbKit/1.4.5`；`MbKit_Version()` 在**内核启动前返回空串**，版本校验发生在第一次
   启动内核之后 —— 不要在 `apprun` 里断言版本。
 - 已知限制：内核一个进程只有一份（换内核只能重启宿主）；约 5 次快速热重载仍可能让宿主崩在
   `win32u.dll+0x11cc`（内核 WebView2 异步释放竞态，不在 python 侧可控范围）；view 销毁延迟约
   400 ms 回收；只有窗口模式验证过。
 - 用不上就不要 `import` —— 模板里是注释状态，不影响打包，也不影响其它能力。
+
+下载也可以拦下来，或者静默落盘（不弹 Edge 的下载框）：
+
+- `on_download(fn)`：回调 **`False` = 取消本次下载**，`True` / `None` = 放行（默认放行）；
+  `on_download_start(fn)`：回调 **`True` = 业务接管**（内核取消自己那份，此后不再发进度 / 完成，默认不接管）
+  —— **两者方向相反**，写反不报错但行为正好颠倒。
+- `on_download_progress(recv, total, pct)`：`total=0` 时 `pct=-1`，字节数上限 `2147483647`；
+  `on_download_finish(path, result)`：`result=0` 才是成功，**取消 / 接管路径不触发**。
+- 静默落盘 = `on_download`（**必须先注册**，返回 `True` 最稳妥，`None` 也算放行）+ `set_download_dir(目录)`，
+  **缺一不可**（内核先查 `wkeOnDownload` 有没有注册）；目录不存在/不可写时本层**不报错**，内核建不出目录会
+  静默退回 Edge 默认下载（此时不触发 `on_download_finish` 成功路径），建议先 `os.makedirs`；
+  `set_download_dir` 入参 UTF-8、内部转 GBK，编码不了抛 `MbKitError`。
+- `on_load_url_begin(fn)`：回调 **`False` = 取消本次导航**（连「即将导航」都不发），默认放行，
+  **高危** —— 不确定就 `return None`；第 4 个参数 `job` 恒 0，别拿它调内核网络接口。
+- 版本要求：这 6 个方法只在 **2026-10-20 版 `MbKit146.dll`（`MbKit/1.4.5`，325 导出）** 上有；
+  旧内核注册时抛 `MbKitError`（「没有可用的导出 …」），不崩插件。
+- 回调在**宿主 UI 线程**上触发（和 `on_document_ready2` 一样）：别在回调里阻塞或做耗时操作，
+  重活丢 `run_in_thread`；在别的线程操作已建好的 view 用 `wv.post(fn)`。
 
 ### 7. 打包与交付
 

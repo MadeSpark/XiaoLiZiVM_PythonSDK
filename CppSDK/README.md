@@ -341,6 +341,12 @@ void StartWebUi()
 | `Reload` / `StopLoading` / `GoBack` / `GoForward` | 导航控制 |
 | `GetUrl` / `GetTitle` / `GetSource` / `IsDocumentReady` / `GetHostWindow` | 读页面信息 |
 | `Resize(w, h)` / `IsValid()` | 改大小 / 判断 view 是否仍有效 |
+| `OnDownload(fn)` | 对应 `事件_正在下载`：`fn(const DownloadEvent&)->bool`，**false = 取消本次下载**，true = 放行（默认真） |
+| `OnDownloadStart(fn)` | 对应 `事件_下载开始`：`fn(const DownloadStartEvent&)->bool`，**true = 业务接管**（不再发进度/完成），默认不接管；**方向与 `OnDownload` 相反** |
+| `OnDownloadProgress(fn)` | 对应 `事件_下载进度`：`fn(const DownloadProgressEvent&)`，`TotalBytes=0` 时 `Percent=-1`，字节数上限 `2147483647` |
+| `OnDownloadFinish(fn)` | 对应 `事件_下载完成`：`fn(const DownloadFinishEvent&)`，`Result=0` 成功；**取消/接管路径不触发** |
+| `OnLoadUrlBegin(fn)` | 对应 `事件_开始载入URL`：`fn(const LoadUrlBeginEvent&)->bool`，**false = 取消本次导航**（不发「即将导航」），true = 放行，**高危**；`Job` 恒 0 |
+| `SetDownloadDir(dirUtf8)` | 置下载目录（UTF-8 入参，内核内部转 GBK）；**只有同时注册 `OnDownload` 且返回 true 才生效**；传 `nullptr`/`""` = 清掉本 view 的静默目录，之后回到「Edge 自己的下载 UI」（内核**不会**重置 profile 里已设过的默认下载文件夹）；GBK 编不出的字符返回 `BadParam` |
 
 失败一律返回 `WebUiError`（`Ok`、`NoKernelDll`、`MissingSymbol`、`BadParam`、`BadState`、
 `HostDllNotFound`、`HostDllLoadFailed`、`ViewNotBound`、`NotOnOwnerThread` …），**不会空指针调内核**。
@@ -392,8 +398,10 @@ void StopWebUi()   // 插件卸载回调里调
 
 - **放哪**：`<宿主 exe 目录>\MbKit146.dll`（框架/易语言模块用同一份）。SDK 的查找顺序是
   `SetKernelBlob()` 注入的内存映像 → `SetKernelSourceDir()` 指定的旁路目录 →
-  **宿主 exe 目录** → `%TEMP%\ElangMbKit\MbKit146.dll` → 裸名（系统搜索序，含「已被进程载入」的命中）。
+  **宿主 exe 目录** → 裸名（系统搜索序，含「已被进程载入」的命中）。
   找不到不崩：`EnsureLoaded()` 返回 `HostDllNotFound`，`LastLoadError()` 里列出试过的路径。
+- **框架收养闸**：框架只把内核释放到运行时/exe 目录；进程里已载入的 `MbKit146.dll` 必须与模块内置
+  内核逐字节相同，否则拒绝加载并报「进程里已有别的代码载入了 MbKit146.dll，且它不是本模块内置内核的同一份拷贝（请重启宿主，并让本插件在别的插件之前加载）」。
 - **更新时按内容比对**：换内核**不能只比文件大小或时间戳**（历史事故：同尺寸的旧 DLL 覆盖了新内核，
   导致 WebView2 永不初始化）。正确做法是逐字节比对；文件被占用写不进去时，用已载入的那份并记告警。
 - **版本钉住**：本 SDK 对齐 **`MbKit/1.4.5`**。载入后读 `MbKit_Version()` 校验，
@@ -454,3 +462,24 @@ void StopWebUi()   // 插件卸载回调里调
 :: 用参数传入，或设环境变量 MBKIT_DEF 指向它。
 python tools\check_webui_exports.py src\xlz_webui.cpp D:\path\to\gen_fwd.def
 ```
+
+### 下载拦截与静默下载（需 2026-10-20 后的内核）
+
+内核导出 `wkeOnDownload` / `wkeOnDownloadStart` / `wkeOnDownloadProgress` / `wkeOnDownloadFinish` /
+`wkeSetDownloadDir` / `wkeOnLoadUrlBegin`，`XlzWebView` 已封装为去掉 `wke` 前缀的同名方法；内核太旧时
+这些方法返回 `WebUiError::MissingSymbol`（不崩）。
+
+- `OnDownload(fn)`：回调返回 **true = 放行、false = 取消**本次下载（默认放行）；
+  `OnDownloadStart(fn)`：返回 **非 0 = 业务接管** —— 内核会取消自己那份，此后不再有进度 / 完成回调。
+  **两者方向相反**，写反不报错但语义正好颠倒。
+- `OnDownloadProgress(recv, total, pct)`：`total=0` 时 `pct=-1`，字节数上限 `2147483647`；
+  `OnDownloadFinish(path, result)`：`result=0` 才成功，**取消 / 接管路径不触发**。
+- 静默落盘 = `OnDownload`（返回 true）+ `SetDownloadDir(目录)`，**缺一不可**（内核先查有没有注册
+  `wkeOnDownload`，没注册就直接走 Edge 默认下载）；目录不存在 / 不可写时本层**不报错**，内核建不出目录会
+  静默退回 Edge 默认下载（此时不触发 `OnDownloadFinish` 成功路径），建议自己先建目录；目录里若有 GBK
+  编不出的字符返回 `WebUiError::BadParam`。
+- `OnLoadUrlBegin(fn)`：返回 **0 = 取消本次导航**（连「即将导航」都不发），默认放行，**高危**；
+  第 4 个参数 `job` 恒 0。
+- 下载过程没有断点续传 / 自动重试 / 多线程下载，需要就自己在业务接管路径里实现。
+
+完整示例与坑位见 C++ SDK 仓库根 `README.md` 的「下载拦截与静默下载」。

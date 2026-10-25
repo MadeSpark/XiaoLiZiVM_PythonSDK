@@ -569,7 +569,88 @@ def on_group_message(ev: dict) -> int:
 | `get_url` / `get_title` / `get_source` / `view_size` | 读取页面信息 |
 | `set_zoom` / `set_user_agent` / `set_cookie_enabled` / `set_debug_config` | 杂项设置 |
 | `post(fn)` / `pump(ms)` / `repaint()` / `resize(w, h)` | 跨线程投递 / 泵消息 / 重绘 / 改大小 |
+| `on_download` / `on_download_start` / `on_download_progress` / `on_download_finish` / `on_load_url_begin` / `set_download_dir` | 下载拦截与静默落盘（见下面[「下载拦截与静默下载」](#下载拦截与静默下载)，需 `MbKit/1.4.5`） |
 | `WebView.self_diag()` / `MbKit.self_diag()` / `detach_all()` / `is_unloading()` | 自检 / 全局解绑 / 卸载标志 |
+
+### 下载拦截与静默下载
+
+需要「接管网页下载 / 静默落盘 / 屏蔽乱下载 / 拦导航」时才用。这 6 个方法只在 **2026-10-20 版
+`MbKit146.dll`（`MbKit/1.4.5`，325 导出）** 上有对应导出；旧内核上 `GetProcAddress` 返回 0，
+调用抛 `MbKitError`（不会崩插件）。实现见 `PythonSDK/Demo_TemplatePlugin/xlz_webui.py`。
+
+| 方法 | 说明 |
+|---|---|
+| `on_download(fn)` | `fn(url) -> bool`：**False = 取消本次下载**；`None`/无返回 = 放行（默认）。传 `None` 只清掉本进程的回调（内核侧仍算已注册 → 仍按放行） |
+| `on_download_start(fn)` | `fn(url, filename, total) -> bool`：**True = 业务接管**（内核取消自己那份，此后不再发进度/完成）；`None` = 不接管（默认）。`total=0` 表示未知（或 >2 GB） |
+| `on_download_progress(fn)` | `fn(received, total, percent)`：`total=0` 时 `percent=-1`；字节数上限 `2147483647` |
+| `on_download_finish(fn)` | `fn(path, result)`：`result=0` 成功；**取消/接管路径不触发** |
+| `on_load_url_begin(fn)` | `fn(url) -> bool`：**False = 取消本次导航**（连「即将导航」都不发）；`None` = 放行（默认）。**高危** |
+| `set_download_dir(path)` | `str`/`pathlib` 均可，内部转 GBK（编码不了抛 `MbKitError`）；`""`/`None` = 清掉本 view 的静默目录（回到 Edge 自己的下载 UI，内核**不会**重置 profile 里已设过的默认目录）。**只有同时注册 `on_download` 且返回真才生效** |
+
+内核里的实际顺序：`on_download_start`（接管就到此为止）→ `on_download`（取消就到此为止）→
+落盘（设过目录则静默落盘，否则 Edge 默认下载 UI）→ 进度（每 300 ms 有**新字节**才发）→
+完成（只发一次，`result=0` 成功）。
+
+```python
+# 用法 A：只收进度（不改内核行为，下载仍走 Edge 默认 UI）
+def on_group_message(ev: dict) -> int:
+    if ev.get("message") == "网页":
+        wv = WebView(api.get_framework_main_window_handle())
+        # percent=-1 表示大小未知（total=0），别拿它算进度条
+        wv.on_download_progress(
+            lambda recv, total, pct: api.output_log("下载 %s/%s（%s%%）" % (recv, total, pct)))
+        wv.on_download_finish(
+            lambda path, result: api.output_log("完成 result=%s 文件=%s" % (result, path)))
+        wv.load_url("https://example.com/")
+    return 0
+```
+
+```python
+# 用法 B：业务接管（返回 True 后内核取消自己那份，此后不再有进度/完成回调）
+def handle_download_start(url, filename, total):
+    if total > 64 * 1024 * 1024:        # 太大的不接管，交回内核（返回 False/None）
+        return False
+    api.output_log("接管下载：%s（%s 字节，建议名=%s）" % (url, total, filename))
+    # 自己的下载逻辑在这里【登记】——别在这个回调里阻塞（它在宿主消息线程）
+    return True                          # True = 接管
+
+wv.on_download_start(handle_download_start)
+```
+
+```python
+# 用法 C：URL 白名单取消（只放行自家域名，其余一律取消）
+def allow_download(url):
+    if url.startswith("https://dl.example.com/"):
+        return True                      # 放行
+    api.output_log("已拦截下载：%s" % url)
+    return False                         # False = 取消本次下载
+
+wv.on_download(allow_download)
+```
+
+```python
+# 静默落盘：on_download 返回真 + set_download_dir 同时成立才生效（缺一不可）
+wv.on_download(lambda url: True)         # ★ 必须注册，且别返回 False；None 也按放行（True 最稳妥）。没注册 → 内核直接走 Edge 默认下载
+dl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+os.makedirs(dl_dir, exist_ok=True)       # 内核也会尝试建目录；建不出/不可写会退回 Edge 默认下载（静默失效），建议自己先建
+wv.set_download_dir(dl_dir)              # 内部转 GBK；编码不了抛 MbKitError；""/None = 清掉本 view 的静默目录（回到 Edge 自己的下载 UI）
+```
+
+**五个必须知道的坑**
+
+1. **返回方向相反**：`on_download` 返回 `False` = 取消（默认放行）；`on_download_start` 返回
+   `True` = 接管（默认不接管）。写反不会报错，只会表现为「下载静默消失」或「以为接管了其实内核在自己下」。
+2. **`set_download_dir` 依赖 `on_download`**：内核先查 `wkeOnDownload` 有没有注册，**没注册就直接放行
+   Edge 默认下载**，目录根本不生效。所以「静默落盘」= `on_download(→True)` + `set_download_dir(目录)`。
+3. **`on_load_url_begin` 默认放行、写错就断网**：返回 `False` 会取消**所有**匹配的导航（含子框架 /
+   重定向），没有兜底回调可救 —— 不确定就 `return None`。另外下载过程本身**没有**断点续传 / 自动重试 /
+   多线程下载，需要就自己在接管路径里实现。
+4. **拿不到文件名时没有进度/完成事件**：没设下载目录、且从 URL 推断不出文件名时，内核不挂 watch ——
+   只有 `on_download` 会来，`on_download_progress` / `on_download_finish` 可能一次都不出现。别把
+   「没有 finish」当成下载失败。
+5. **`on_download(None)` 不是真解绑**：它只清掉本进程的回调表，内核侧仍算「已注册」，thunk 按放行
+   返回 —— 若之前设过 `set_download_dir`，就会变成**静默落盘**。真要回退只能销毁 view（`destroy()`）。
+
 
 ### 三条必须守住的规则
 
@@ -599,7 +680,9 @@ def on_uninstall() -> int:
 ### `MbKit146.dll` 的放置与版本
 
 - 搜索顺序：`dll_path=` 显式指定 → 环境变量 `XLZ_MBKIT_DLL` → 已加载模块 → 宿主 exe 目录 →
-  插件目录 → `%TEMP%\ElangMbKit` → 裸名（走系统搜索路径）。
+  插件目录 → 裸名（走系统搜索路径）。
+- **框架收养闸**：框架只把内核释放到运行时/exe 目录；进程里已载入的 `MbKit146.dll` 必须与模块内置内核
+  逐字节相同，否则拒绝加载并报「进程里已有别的代码载入了 MbKit146.dll，且它不是本模块内置内核的同一份拷贝（请重启宿主，并让本插件在别的插件之前加载）」。
 - **找不到不会崩插件**：构造时抛 `MbKitNotFoundError`，异常消息里列出所有搜索过的路径（命中的那条
   会标 `<-- 命中`），按提示放 DLL 即可。
 - 版本要求 `MbKit/1.4.5`。注意 `MbKit_Version()` 在**内核启动之前返回空串**，所以版本校验发生在

@@ -106,6 +106,26 @@
 - **自查**：交付前跑 `python tools\check_webui_exports.py src\xlz_webui.cpp <gen_fwd.def>`，确认用到的内核导出名零拼错；
   编译用 `/p:PlatformToolset=v143`（机器上只有 v143 时），生成 `Win32` + `Release` 的 DLL。
 
+#### 下载拦截与静默下载（需 2026-10-20 后的内核）
+
+内核导出 `wkeOnDownload` / `wkeOnDownloadStart` / `wkeOnDownloadProgress` / `wkeOnDownloadFinish` /
+`wkeSetDownloadDir` / `wkeOnLoadUrlBegin`，`XlzWebView` 已封装为去掉 `wke` 前缀的同名方法；内核太旧时
+这些方法返回 `WebUiError::MissingSymbol`（不崩）。
+
+- **`wkeOnDownload` 回调返回真 = 放行、假 = 取消**（默认放行）；**`wkeOnDownloadStart` 返回非 0 = 业务接管**——
+  内核会取消自己那份，此后不再有进度 / 完成回调。**两者方向相反**，写反不报错但语义颠倒。
+- **进度与完成**：`wkeOnDownloadProgress(recv, total, pct)`，`total=0` 时 `pct=-1`，字节数上限 `2147483647`；
+  `wkeOnDownloadFinish(path, result)` 的 `result=0` 才成功，取消 / 接管路径不触发。
+- **静默落盘 = `wkeOnDownload`（返回真）+ `wkeSetDownloadDir(目录)`，缺一不可**（内核先查有没有注册
+  `wkeOnDownload`，没注册就直接走 Edge 默认下载）；目录不存在 / 不可写时本层**不报错**，内核建不出目录会
+  静默退回 Edge 默认下载（此时不触发 `OnDownloadFinish` 成功路径），建议自己先建目录；目录里若有 GBK
+  编不出的字符返回 `WebUiError::BadParam`。
+- **`wkeOnLoadUrlBegin` 返回 0 = 取消本次导航**（连「即将导航」都不发），默认放行，**高危**；
+  第 4 个参数 `job` 恒 0。
+- **没有断点续传 / 自动重试 / 多线程下载**，需要就自己在业务接管路径里实现。
+
+完整示例与坑位见 C++ SDK 仓库根 `README.md` 的「下载拦截与静默下载」。
+
 ---
 
 ## 工程与文件生成要求

@@ -87,8 +87,8 @@ namespace wke
 	//      直接 LoadLibrary 到进程后按基名命中规则生效）；
 	//      或者 SetKernelSourceDir() 指定的旁路目录（例如 SDK 目录旁）。
 	//   1) 宿主 exe 目录 \MbKit146.dll
-	//   2) %TEMP%\ElangMbKit\MbKit146.dll（自动建目录）
-	//   3) 裸名 MbKit146.dll（系统搜索序，含「已被进程载入」的命中）
+	//   2) 裸名 MbKit146.dll（系统搜索序，含「已被进程载入」的命中）
+	// 内核只由框架释放到运行时/exe 目录；收养闸要求进程内已载入副本与内置内核逐字节相同。
 	// 已被进程按基名载入过时直接复用（Windows 按基名命中，先载入的那份生效）。
 	// 载入后校验 MbKit_Version() 版本串：不含 "MbKit/1.4.5" 时记入告警文本，
 	// 由 SelfDiag()/VersionWarning() 输出（版本钉住 + 多份告警机制）。
@@ -188,6 +188,47 @@ namespace wke
 			std::string TitleUtf8;
 		};
 
+		// 正在下载回调参数（wkeOnDownload）
+		struct DownloadEvent
+		{
+			uint64_t WebView;
+			std::string UrlUtf8;  // 下载地址
+		};
+
+		// 下载开始回调参数（wkeOnDownloadStart）
+		struct DownloadStartEvent
+		{
+			uint64_t WebView;
+			std::string UrlUtf8;        // 下载地址
+			std::string FileNameUtf8;   // 建议文件名（无则由内核从 URL 推）
+			int64_t TotalBytes;         // 总字节数；未知或 > 2GB 时为 0
+		};
+
+		// 下载进度回调参数（wkeOnDownloadProgress）
+		struct DownloadProgressEvent
+		{
+			uint64_t WebView;
+			int32_t ReceivedBytes;      // 已接收字节（夹到 0..2147483647）
+			int32_t TotalBytes;         // 总字节（夹到 0..2147483647；0 = 未知）
+			int32_t Percent;            // 百分比；总长未知时为 -1
+		};
+
+		// 下载完成回调参数（wkeOnDownloadFinish）
+		struct DownloadFinishEvent
+		{
+			uint64_t WebView;
+			std::string FilePathUtf8;   // 落盘路径
+			int32_t Result;             // 0 = 成功；非 0 = 失败/中断
+		};
+
+		// 开始载入URL回调参数（wkeOnLoadUrlBegin）
+		struct LoadUrlBeginEvent
+		{
+			uint64_t WebView;
+			std::string UrlUtf8;        // 即将导航到的地址
+			uint64_t Job;               // WebView2 无对应物，恒 0（不得对它调 wkeNetSetData）
+		};
+
 		// JS 绑定函数回调：入参为执行状态 es，返回 jsValue（长整数）
 		using JsBoundFunction = std::function<int64_t(int64_t es)>;
 
@@ -230,6 +271,19 @@ namespace wke
 		WebUiError OnConsole(std::function<void(const ConsoleEvent&)> fn);
 		WebUiError OnLoadingFinish(std::function<void(const LoadingFinishEvent&)> fn);
 		WebUiError OnTitleChanged(std::function<void(const TitleChangedEvent&)> fn);
+
+		// ---- 事件：下载拦截 / 导航拦截 ----
+		// 事件_正在下载：返回 false = 取消本次下载；true = 允许（内核继续默认/静默落盘）
+		WebUiError OnDownload(std::function<bool(const DownloadEvent&)> fn);
+		// 事件_下载开始：返回 true = 业务接管（内核取消自己那份，且不再发进度/完成）；false = 不接管
+		WebUiError OnDownloadStart(std::function<bool(const DownloadStartEvent&)> fn);
+		WebUiError OnDownloadProgress(std::function<void(const DownloadProgressEvent&)> fn);
+		WebUiError OnDownloadFinish(std::function<void(const DownloadFinishEvent&)> fn);
+		// 事件_开始载入URL：返回 false = 取消本次导航；true = 放行（第 4 参 Job 恒 0）
+		WebUiError OnLoadUrlBegin(std::function<bool(const LoadUrlBeginEvent&)> fn);
+		// 置下载目录：UTF-8；nullptr/"" = 恢复 Edge 默认下载。
+		// ★ 必须同时注册 OnDownload 且返回 true 才生效（内核顺序决定）。
+		WebUiError SetDownloadDir(const char* dirUtf8);
 
 		// ---- 次核心便捷命令 ----
 		// 取窗口句柄 → wkeGetHostHWND

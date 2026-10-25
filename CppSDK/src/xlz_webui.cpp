@@ -92,6 +92,85 @@ static std::string PtrToUtf8(const char* p, bool maybeAnsi)
 }
 
 // ---------------------------------------------------------------------------
+// 内部工具：ANSI(GBK, 明确 code page 936) ↔ UTF-8
+// 下载拦截/导航拦截族的文本一律走这里，不用 CP_ACP（宿主系统区域不是 936 时
+// CP_ACP 会把中文转坏；内核 mbkit 侧 w2ansi/ansiw 固定按 936 收发）。
+// ---------------------------------------------------------------------------
+static std::string GbkToUtf8(const char* gbk)
+{
+	// ANSI(GBK) 转 UTF-8（内核回调交出来的 URL / 文件名 / 落盘路径）
+	if (gbk == nullptr)
+	{
+		return std::string();
+	}
+	const int wlen = ::MultiByteToWideChar(936, 0, gbk, -1, nullptr, 0);
+	if (wlen <= 1)
+	{
+		return std::string();
+	}
+	std::wstring ws(static_cast<size_t>(wlen), L'\0');
+	const int got = ::MultiByteToWideChar(936, 0, gbk, -1, &ws[0], wlen);
+	if (got <= 1)
+	{
+		return std::string();
+	}
+	ws.resize(static_cast<size_t>(got - 1)); // 去掉末尾 NUL，WideToUtf8 会重新补
+	return WideToUtf8(ws.c_str());
+}
+
+static std::string Utf8ToGbk(const char* utf8, bool* ok = nullptr)
+{
+	// UTF-8 转 ANSI(GBK)（SetDownloadDir 这类要 ANSI 入参的内核导出）
+	// ok 非空时回填是否完整转换：遇到无法映射到 936 的字符置假，绝不静默丢字符。
+	if (ok != nullptr)
+	{
+		*ok = true;
+	}
+	if (utf8 == nullptr)
+	{
+		return std::string();
+	}
+	const int wlen = ::MultiByteToWideChar(CP_UTF8, 0, utf8, -1, nullptr, 0);
+	if (wlen <= 0)
+	{
+		if (ok != nullptr) *ok = false;
+		return std::string();
+	}
+	std::wstring ws(static_cast<size_t>(wlen), L'\0');
+	if (::MultiByteToWideChar(CP_UTF8, 0, utf8, -1, &ws[0], wlen) <= 0)
+	{
+		if (ok != nullptr) *ok = false;
+		return std::string();
+	}
+	ws.resize(static_cast<size_t>(wlen - 1));
+	if (ws.empty())
+	{
+		return std::string();
+	}
+
+	// WC_NO_BEST_FIT_CHARS：禁止「近似字符」替身，只接受 936 里真有的字符
+	const DWORD flags = WC_NO_BEST_FIT_CHARS;
+	BOOL usedDefault = FALSE;
+	const int blen = ::WideCharToMultiByte(936, flags, ws.c_str(), static_cast<int>(ws.size()),
+		nullptr, 0, nullptr, &usedDefault);
+	if (blen <= 0 || usedDefault)
+	{
+		if (ok != nullptr) *ok = false;
+		return std::string();
+	}
+	std::string out(static_cast<size_t>(blen), '\0');
+	usedDefault = FALSE;
+	const int wrote = ::WideCharToMultiByte(936, flags, ws.c_str(), static_cast<int>(ws.size()),
+		&out[0], blen, nullptr, &usedDefault);
+	if (wrote <= 0 || usedDefault)
+	{
+		if (ok != nullptr) *ok = false;
+		return std::string();
+	}
+	return out;
+}
+
+// ---------------------------------------------------------------------------
 // 「正在卸载」标志：所有 webui 回调 thunk 进入时先检查
 // ---------------------------------------------------------------------------
 static std::atomic<bool> g_unloading(false);
@@ -134,6 +213,13 @@ typedef const wchar_t* (__stdcall* Fn_WC_ll_I64)(int64_t, int64_t); // jsToTempS
 typedef int64_t      (__stdcall* Fn_I64_ll_wc)(int64_t, const wchar_t*); // jsStringW(es, w)
 typedef void*        (__stdcall* Fn_Ptr_v)();                       // wkeCreateWebView()
 
+// —— 下载拦截 / 导航拦截族：注册导出与回调都是 __cdecl ——
+// 说明：上面的 Fn_* 是历史遗留的 __stdcall 声明（既有 4 个事件照旧不动），
+// 新族按内核真实调用约定走 __cdecl：mbkit 侧 fire() 是
+// int (__cdecl*)(view, user, a3..a7, 0, 0, 0)（mb_cb10，见 mbk_webview.cpp）。
+typedef void         (__cdecl* Fn_v_p_cb_pv)(void*, void*, void*);  // wkeOnDownload 族(view, cb, user)
+typedef void         (__cdecl* Fn_v_p_pc)(void*, const char*);      // wkeSetDownloadDir(view, dirA)
+
 // ---------------------------------------------------------------------------
 // MbKitLib 实现
 // ---------------------------------------------------------------------------
@@ -172,7 +258,7 @@ static std::wstring g_kernelSourceDir;      // 旁路目录（含 MbKit146.dll �
 
 bool MbKitLib::SetKernelBlob(const void* blobBytes, uint32_t blobLength)
 {
-	// 提供内核 blob：必须是完整的 MbKit146.dll 文件映像（723,456 B，MbKit/1.4.5）
+	// 提供内核 blob：必须是完整的 MbKit146.dll 文件映像（763,904 B，MbKit/1.4.5）
 	if (blobBytes == nullptr || blobLength < 1024)
 	{
 		return false;
@@ -331,23 +417,7 @@ WebUiError MbKitLib::EnsureLoaded()
 			}
 		}
 	}
-	// 1) %TEMP%\ElangMbKit\MbKit146.dll（自动建目录）
-	if (chosen.empty())
-	{
-		wchar_t tempDir[MAX_PATH] = {};
-		if (::GetTempPathW(MAX_PATH, tempDir) > 0)
-		{
-			std::wstring sub = tempDir;
-			if (!sub.empty() && sub[sub.size() - 1] != L'\\')
-			{
-				sub += L'\\';
-			}
-			sub += L"ElangMbKit";
-			::CreateDirectoryW(sub.c_str(), nullptr);
-			chosen = TryDirForHostLib(sub);
-		}
-	}
-	// 2) 裸名（系统搜索序；Windows 按基名命中已载入模块，先载入的那份生效）
+	// 1) 裸名（系统搜索序；Windows 按基名命中已载入模块，先载入的那份生效）
 	if (chosen.empty())
 	{
 		HMODULE already = ::GetModuleHandleW(L"MbKit146.dll");
@@ -360,7 +430,7 @@ WebUiError MbKitLib::EnsureLoaded()
 		else
 		{
 			impl.loadAttempted = true;
-			impl.lastLoadError = "MbKit146.dll not found (kernel dir / host exe dir / %TEMP%\\ElangMbKit\\ / search path); "
+			impl.lastLoadError = "MbKit146.dll not found (kernel source dir / host exe dir / search path); "
 				"provide it via SetKernelBlob()/SetKernelSourceDir() or deploy it next to the host exe";
 			return WebUiError::HostDllNotFound;
 		}
@@ -827,8 +897,8 @@ std::string JsToStringUtf8(int64_t es, int64_t jsValue)
 struct XlzWebView::Impl
 {
 	void* view = nullptr;                       // wkeWebView 句柄
-	uint32_t generation = 0;                    // 代际计数：每次 Bind/Destroy +1，
-	                                            // 回调 thunk 持有代际，不匹配直接忽略
+	uint32_t generation = 0;                    // 保留字段：Bind/Destroy 各 +1；当前 thunk
+	                                            // 只比对 view 指针，不依赖它做代际判断
 	std::atomic<bool> alive{ false };           // 存活标志：Destroy 后立即置假
 	void* hostHwnd = nullptr;                   // 承载窗口
 
@@ -837,6 +907,12 @@ struct XlzWebView::Impl
 	std::function<void(const XlzWebView::ConsoleEvent&)> onConsole;
 	std::function<void(const XlzWebView::LoadingFinishEvent&)> onLoadingFinish;
 	std::function<void(const XlzWebView::TitleChangedEvent&)> onTitleChanged;
+	// 下载拦截 / 导航拦截族（__cdecl thunk；返回 bool 的三个按内核语义决定放行/取消）
+	std::function<bool(const XlzWebView::DownloadEvent&)> onDownload;
+	std::function<bool(const XlzWebView::DownloadStartEvent&)> onDownloadStart;
+	std::function<void(const XlzWebView::DownloadProgressEvent&)> onDownloadProgress;
+	std::function<void(const XlzWebView::DownloadFinishEvent&)> onDownloadFinish;
+	std::function<bool(const XlzWebView::LoadUrlBeginEvent&)> onLoadUrlBegin;
 	std::vector<std::pair<std::string, XlzWebView::JsBoundFunction>> jsBinds; // JS 绑定函数 keep-alive
 
 	bool valid() const { return alive.load() && view != nullptr; }
@@ -902,6 +978,124 @@ static void __stdcall ThunkTitleChanged(void* webView, void* user, void* titleSt
 	ev.WebView = reinterpret_cast<uint64_t>(webView);
 	ev.TitleUtf8 = WideToUtf8(static_cast<const wchar_t*>(titleStr));
 	self->onTitleChanged(ev);
+}
+
+// ---- 下载拦截 / 导航拦截族 thunk（__cdecl，与内核 mbkit_cb 的 mb_cb10 一致）----
+// 内核 fire() 形态为 int __cdecl(view, user, a3..a7, 0, 0, 0)（调用方负责平栈），
+// 因此这里只声明真正用到的形参个数是安全的。
+// 统一进入顺序：卸载标志 → 取 Impl* → 存活/句柄校验 → GBK→UTF-8 → 用户回调；
+// 用户回调为空或抛异常时返回该事件的「默认语义」值，绝不把异常泄进内核：
+//   放行类（正在下载 / 开始载入URL）默认 1（允许），接管类（下载开始）默认 0（不接管）。
+
+static int __cdecl ThunkDownload(void* webView, void* user, const char* urlA)
+{
+	// wkeOnDownload(wkeWebView, user, URL[ANSI/GBK])：返回非 0 = 允许下载，0 = 取消
+	if (IsUnloading()) return 1;
+	XlzWebView::Impl* self = static_cast<XlzWebView::Impl*>(user);
+	if (self == nullptr || !self->valid() || self->view != webView) return 1;
+	if (!self->onDownload) return 1;
+	try
+	{
+		XlzWebView::DownloadEvent ev;
+		ev.WebView = reinterpret_cast<uint64_t>(webView);
+		ev.UrlUtf8 = GbkToUtf8(urlA);
+		return self->onDownload(ev) ? 1 : 0;
+	}
+	catch (...)
+	{
+		return 1; // 业务回调抛异常：按「允许」处理，不因异常取消用户下载
+	}
+}
+
+static int __cdecl ThunkDownloadStart(void* webView, void* user, const char* urlA,
+	const char* nameA, unsigned total)
+{
+	// wkeOnDownloadStart(wkeWebView, user, URL[ANSI], 建议文件名[ANSI], 总字节数)：
+	// 返回非 0 = 业务接管（内核取消自己那份，不再发进度/完成）
+	if (IsUnloading()) return 0;
+	XlzWebView::Impl* self = static_cast<XlzWebView::Impl*>(user);
+	if (self == nullptr || !self->valid() || self->view != webView) return 0;
+	if (!self->onDownloadStart) return 0;
+	try
+	{
+		XlzWebView::DownloadStartEvent ev;
+		ev.WebView = reinterpret_cast<uint64_t>(webView);
+		ev.UrlUtf8 = GbkToUtf8(urlA);
+		ev.FileNameUtf8 = GbkToUtf8(nameA);
+		// 内核已把「未知 / >2GB」归一为 0，这里只做无符号 → int64 拓宽
+		ev.TotalBytes = static_cast<int64_t>(total);
+		return self->onDownloadStart(ev) ? 1 : 0;
+	}
+	catch (...)
+	{
+		return 0; // 异常时保持内核原有下载流程（不接管）
+	}
+}
+
+static void __cdecl ThunkDownloadProgress(void* webView, void* user, int recv, int total,
+	int pct)
+{
+	// wkeOnDownloadProgress(wkeWebView, user, 已接收字节, 总字节, 百分比)；返回值被内核忽略
+	if (IsUnloading()) return;
+	XlzWebView::Impl* self = static_cast<XlzWebView::Impl*>(user);
+	if (self == nullptr || !self->valid() || self->view != webView) return;
+	if (!self->onDownloadProgress) return;
+	try
+	{
+		XlzWebView::DownloadProgressEvent ev;
+		ev.WebView = reinterpret_cast<uint64_t>(webView);
+		ev.ReceivedBytes = recv;
+		ev.TotalBytes = total;
+		ev.Percent = pct; // 总长未知时 = -1
+		self->onDownloadProgress(ev);
+	}
+	catch (...)
+	{
+	}
+}
+
+static void __cdecl ThunkDownloadFinish(void* webView, void* user, const char* pathA,
+	int result)
+{
+	// wkeOnDownloadFinish(wkeWebView, user, 落盘路径[ANSI], result 0成功/非0失败)；
+	// 返回值被内核忽略
+	if (IsUnloading()) return;
+	XlzWebView::Impl* self = static_cast<XlzWebView::Impl*>(user);
+	if (self == nullptr || !self->valid() || self->view != webView) return;
+	if (!self->onDownloadFinish) return;
+	try
+	{
+		XlzWebView::DownloadFinishEvent ev;
+		ev.WebView = reinterpret_cast<uint64_t>(webView);
+		ev.FilePathUtf8 = GbkToUtf8(pathA);
+		ev.Result = result;
+		self->onDownloadFinish(ev);
+	}
+	catch (...)
+	{
+	}
+}
+
+static int __cdecl ThunkLoadUrlBegin(void* webView, void* user, const char* urlA, void* job)
+{
+	// wkeOnLoadUrlBegin(wkeWebView, user, URL[ANSI], job)；返回 0 = 取消本次导航，非 0 = 放行
+	if (IsUnloading()) return 1;
+	XlzWebView::Impl* self = static_cast<XlzWebView::Impl*>(user);
+	if (self == nullptr || !self->valid() || self->view != webView) return 1;
+	if (!self->onLoadUrlBegin) return 1;
+	try
+	{
+		XlzWebView::LoadUrlBeginEvent ev;
+		ev.WebView = reinterpret_cast<uint64_t>(webView);
+		ev.UrlUtf8 = GbkToUtf8(urlA);
+		// WebView2 内核没有 wkeNetJob 对应物，恒传 0；业务侧不得对它调 wkeNetSetData
+		ev.Job = reinterpret_cast<uint64_t>(job);
+		return self->onLoadUrlBegin(ev) ? 1 : 0;
+	}
+	catch (...)
+	{
+		return 1; // 异常时放行：拦错导航比多回调一次糟
+	}
 }
 
 // JS 绑定函数 thunk：wkeJsBindFunction 的 fn 形态（__stdcall）：
@@ -1047,6 +1241,19 @@ void XlzWebView::Destroy()
 		if (found) fnFinish(impl.view, nullptr, nullptr);
 		Fn_v_p_pF_pv fnTitle = reinterpret_cast<Fn_v_p_pF_pv>(MustProc("wkeOnTitleChanged", &found));
 		if (found) fnTitle(impl.view, nullptr, nullptr);
+
+		// 撤销下载拦截 / 导航拦截族（__cdecl 注册导出，参数同形态）
+		typedef void         (__cdecl* Fn_v_p_cb_pv)(void*, void*, void*);
+		Fn_v_p_cb_pv fnDl = reinterpret_cast<Fn_v_p_cb_pv>(MustProc("wkeOnDownload", &found));
+		if (found) fnDl(impl.view, nullptr, nullptr);
+		Fn_v_p_cb_pv fnDlStart = reinterpret_cast<Fn_v_p_cb_pv>(MustProc("wkeOnDownloadStart", &found));
+		if (found) fnDlStart(impl.view, nullptr, nullptr);
+		Fn_v_p_cb_pv fnDlProg = reinterpret_cast<Fn_v_p_cb_pv>(MustProc("wkeOnDownloadProgress", &found));
+		if (found) fnDlProg(impl.view, nullptr, nullptr);
+		Fn_v_p_cb_pv fnDlFin = reinterpret_cast<Fn_v_p_cb_pv>(MustProc("wkeOnDownloadFinish", &found));
+		if (found) fnDlFin(impl.view, nullptr, nullptr);
+		Fn_v_p_cb_pv fnLoadBegin = reinterpret_cast<Fn_v_p_cb_pv>(MustProc("wkeOnLoadUrlBegin", &found));
+		if (found) fnLoadBegin(impl.view, nullptr, nullptr);
 
 		// wkeSetHandle(view, 0) 再销毁（与易模块一致）
 		typedef void (__stdcall* Fn_v_pv_pv)(void*, void*);
@@ -1224,6 +1431,111 @@ WebUiError XlzWebView::OnTitleChanged(std::function<void(const TitleChangedEvent
 	if (!found) return WebUiError::MissingSymbol;
 	impl.onTitleChanged = std::move(fn);
 	fnOn(impl.view, reinterpret_cast<void*>(&ThunkTitleChanged), &impl);
+	return WebUiError::Ok;
+}
+
+// ---- 下载拦截 / 导航拦截族注册（__cdecl 注册导出，thunk 也是 __cdecl）----
+// 注册导出名与内核一致，用户参数统一传 &impl（thunk 里强转回 Impl* 并做存活校验）。
+
+WebUiError XlzWebView::OnDownload(std::function<bool(const DownloadEvent&)> fn)
+{
+	// 事件_正在下载 → wkeOnDownload(view, thunk, user)；返回假 = 取消本次下载
+	XLZ_WKE_ENSURE(return WebUiError::HostDllNotFound);
+	Impl& impl = ImplRef();
+	if (!impl.valid()) return WebUiError::ViewNotBound;
+	bool found = false;
+	typedef void         (__cdecl* Fn_v_p_cb_pv)(void*, void*, void*);
+	Fn_v_p_cb_pv fnOn = reinterpret_cast<Fn_v_p_cb_pv>(MustProc("wkeOnDownload", &found));
+	if (!found) return WebUiError::MissingSymbol;
+	impl.onDownload = std::move(fn);
+	fnOn(impl.view, reinterpret_cast<void*>(&ThunkDownload), &impl);
+	return WebUiError::Ok;
+}
+
+WebUiError XlzWebView::OnDownloadStart(std::function<bool(const DownloadStartEvent&)> fn)
+{
+	// 事件_下载开始 → wkeOnDownloadStart(view, thunk, user)；返回真 = 业务接管
+	XLZ_WKE_ENSURE(return WebUiError::HostDllNotFound);
+	Impl& impl = ImplRef();
+	if (!impl.valid()) return WebUiError::ViewNotBound;
+	bool found = false;
+	typedef void         (__cdecl* Fn_v_p_cb_pv)(void*, void*, void*);
+	Fn_v_p_cb_pv fnOn = reinterpret_cast<Fn_v_p_cb_pv>(MustProc("wkeOnDownloadStart", &found));
+	if (!found) return WebUiError::MissingSymbol;
+	impl.onDownloadStart = std::move(fn);
+	fnOn(impl.view, reinterpret_cast<void*>(&ThunkDownloadStart), &impl);
+	return WebUiError::Ok;
+}
+
+WebUiError XlzWebView::OnDownloadProgress(std::function<void(const DownloadProgressEvent&)> fn)
+{
+	// 事件_下载进度 → wkeOnDownloadProgress(view, thunk, user)
+	XLZ_WKE_ENSURE(return WebUiError::HostDllNotFound);
+	Impl& impl = ImplRef();
+	if (!impl.valid()) return WebUiError::ViewNotBound;
+	bool found = false;
+	typedef void         (__cdecl* Fn_v_p_cb_pv)(void*, void*, void*);
+	Fn_v_p_cb_pv fnOn = reinterpret_cast<Fn_v_p_cb_pv>(MustProc("wkeOnDownloadProgress", &found));
+	if (!found) return WebUiError::MissingSymbol;
+	impl.onDownloadProgress = std::move(fn);
+	fnOn(impl.view, reinterpret_cast<void*>(&ThunkDownloadProgress), &impl);
+	return WebUiError::Ok;
+}
+
+WebUiError XlzWebView::OnDownloadFinish(std::function<void(const DownloadFinishEvent&)> fn)
+{
+	// 事件_下载完成 → wkeOnDownloadFinish(view, thunk, user)；每次下载只发一次
+	XLZ_WKE_ENSURE(return WebUiError::HostDllNotFound);
+	Impl& impl = ImplRef();
+	if (!impl.valid()) return WebUiError::ViewNotBound;
+	bool found = false;
+	typedef void         (__cdecl* Fn_v_p_cb_pv)(void*, void*, void*);
+	Fn_v_p_cb_pv fnOn = reinterpret_cast<Fn_v_p_cb_pv>(MustProc("wkeOnDownloadFinish", &found));
+	if (!found) return WebUiError::MissingSymbol;
+	impl.onDownloadFinish = std::move(fn);
+	fnOn(impl.view, reinterpret_cast<void*>(&ThunkDownloadFinish), &impl);
+	return WebUiError::Ok;
+}
+
+WebUiError XlzWebView::OnLoadUrlBegin(std::function<bool(const LoadUrlBeginEvent&)> fn)
+{
+	// 事件_开始载入URL → wkeOnLoadUrlBegin(view, thunk, user)；返回假 = 取消本次导航
+	XLZ_WKE_ENSURE(return WebUiError::HostDllNotFound);
+	Impl& impl = ImplRef();
+	if (!impl.valid()) return WebUiError::ViewNotBound;
+	bool found = false;
+	typedef void         (__cdecl* Fn_v_p_cb_pv)(void*, void*, void*);
+	Fn_v_p_cb_pv fnOn = reinterpret_cast<Fn_v_p_cb_pv>(MustProc("wkeOnLoadUrlBegin", &found));
+	if (!found) return WebUiError::MissingSymbol;
+	impl.onLoadUrlBegin = std::move(fn);
+	fnOn(impl.view, reinterpret_cast<void*>(&ThunkLoadUrlBegin), &impl);
+	return WebUiError::Ok;
+}
+
+WebUiError XlzWebView::SetDownloadDir(const char* dirUtf8)
+{
+	// 置下载目录 → wkeSetDownloadDir(view, 目录[ANSI/GBK])；
+	// nullptr / "" = 交还 Edge 默认下载（内核把空串当「未指定目录」）。
+	// ★ 内核顺序决定：该目录只有在 OnDownload 已注册且回调返回 true 时才会生效。
+	XLZ_WKE_ENSURE(return WebUiError::HostDllNotFound);
+	Impl& impl = ImplRef();
+	if (!impl.valid()) return WebUiError::ViewNotBound;
+	bool found = false;
+	Fn_v_p_pc fn = reinterpret_cast<Fn_v_p_pc>(MustProc("wkeSetDownloadDir", &found));
+	if (!found) return WebUiError::MissingSymbol;
+	if (dirUtf8 == nullptr || dirUtf8[0] == '\0')
+	{
+		fn(impl.view, "");
+		return WebUiError::Ok;
+	}
+	bool converted = false;
+	const std::string dirA = Utf8ToGbk(dirUtf8, &converted);
+	if (!converted)
+	{
+		// 含 GBK(936) 无法表示的字符：报错，绝不静默丢字符让目录悄悄变样
+		return WebUiError::BadParam;
+	}
+	fn(impl.view, dirA.c_str());
 	return WebUiError::Ok;
 }
 

@@ -7,7 +7,7 @@ from xlz_constants import MessageHandle, EnableResponse, GroupEvent, FriendEvent
 
 # 可选：内嵌浏览器窗口（webui）。默认不启用，模板行为与原来完全一致。
 # 要用就把下面这一行和后面 3 处标了「可选：webui」的注释块一起放开，
-# 并确认插件目录（或宿主 exe 目录 / %TEMP%\ElangMbKit）里有 MbKit146.dll。
+# 并确认插件目录（或宿主 exe 目录）里有 MbKit146.dll。
 # from xlz_webui import WebView, MbKitError, MbKitThreadError, detach_all as webui_detach_all
 # _webui = None            # 本插件唯一的 WebView 实例
 

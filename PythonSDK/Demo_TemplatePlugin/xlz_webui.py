@@ -91,8 +91,7 @@ Python 插件没有「内置资源」这一说（易语言模块是把 DLL 塞�
     3. 进程内**已经载入**的那一份（GetModuleHandleW）—— 宿主或别的插件先载入了就用它
     4. 宿主 exe 所在目录
     5. 本文件所在目录（= 你的插件目录）
-    6. %TEMP%\\ElangMbKit\\
-    7. 裸名 "MbKit146.dll"（走系统 DLL 搜索顺序，含 PATH）
+    6. 裸名 "MbKit146.dll"（走系统 DLL 搜索顺序，含 PATH）
 
 第 3 条最要紧：**一个进程里只有最先载入的那份 MbKit 生效**，多份共存没有意义。
 如果发现版本串里没有 `MbKit/1.4.5`，会 `warnings.warn` 提示「多份 DLL 版本不一致」。
@@ -213,7 +212,8 @@ class _Win32(object):
         k32 = ctypes.WinDLL("kernel32.dll")
         u32 = ctypes.WinDLL("user32.dll")
         g32 = ctypes.WinDLL("gdi32.dll")
-        self._k32, self._u32, self._g32 = k32, u32, g32
+        i32 = ctypes.WinDLL("imm32.dll")     # IME：Imm* 系列不在 user32 里
+        self._k32, self._u32, self._g32, self._i32 = k32, u32, g32, i32
 
         P, PP = ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)
 
@@ -275,10 +275,11 @@ class _Win32(object):
         self.UpdateLayeredWindow = sig(u32, "UpdateLayeredWindow", wintypes.BOOL,
                                        [wintypes.HWND, wintypes.HDC, P, P, wintypes.HDC,
                                         P, wintypes.DWORD, P, wintypes.DWORD])
-        self.ImmGetContext = sig(u32, "ImmGetContext", wintypes.HANDLE, [wintypes.HWND])
-        self.ImmReleaseContext = sig(u32, "ImmReleaseContext", wintypes.BOOL,
+        # ---- imm32（Imm* 是 imm32.dll 的导出，user32 里没有；从 user32 取会 AttributeError）
+        self.ImmGetContext = sig(i32, "ImmGetContext", wintypes.HANDLE, [wintypes.HWND])
+        self.ImmReleaseContext = sig(i32, "ImmReleaseContext", wintypes.BOOL,
                                      [wintypes.HWND, wintypes.HANDLE])
-        self.ImmSetCandidateWindow = sig(u32, "ImmSetCandidateWindow", wintypes.BOOL,
+        self.ImmSetCandidateWindow = sig(i32, "ImmSetCandidateWindow", wintypes.BOOL,
                                          [wintypes.HANDLE, P])
 
         # SetWindowLong 家族：32 位是 SetWindowLongW，64 位必须用 SetWindowLongPtrW
@@ -421,6 +422,20 @@ TITLE_CHANGED_CB = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_void_p, ctypes.
 URL_CHANGED_CB = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
                                   ctypes.c_void_p, ctypes.c_void_p)
 
+# 下载拦截 / 导航拦截（wke*/内核回调，cdecl；view 句柄一律 c_int）
+# 内核 fire() 以 10 个参数调用，thunk 少写几个没关系；返回 bool 语义的必须返回 int。
+# 串参数是 ANSI(GBK) char* —— ctypes 会把 c_char_p 转成 bytes，读取统一走 _read_gbk()。
+DOWNLOAD_CB = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                               ctypes.c_char_p)
+DOWNLOAD_START_CB = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                                     ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+DOWNLOAD_PROGRESS_CB = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_void_p,
+                                        ctypes.c_uint, ctypes.c_uint, ctypes.c_int)
+DOWNLOAD_FINISH_CB = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_void_p,
+                                      ctypes.c_char_p, ctypes.c_int)
+LOAD_URL_BEGIN_CB = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                                     ctypes.c_char_p, ctypes.c_void_p)
+
 
 # ---------------------------------------------------------------- 导出表
 # 规则（别改）：MbKit_* 是 __stdcall（WinDLL + WINFUNCTYPE）
@@ -530,6 +545,13 @@ _CDECL_TABLE = {
     "wkeOnTitleChanged":        (None, [ctypes.c_int, TITLE_CHANGED_CB, ctypes.c_void_p]),
     "wkeOnURLChanged2":         (None, [ctypes.c_int, URL_CHANGED_CB, ctypes.c_void_p]),
     "wkeOnPaintUpdated":        (None, [ctypes.c_int, PAINT_CB, ctypes.c_void_p]),
+    # ---- 下载拦截 / 导航拦截（导出名必须与 gen_fwd.def 逐字一致） -------------
+    "wkeOnDownload":            (None, [ctypes.c_int, DOWNLOAD_CB, ctypes.c_void_p]),
+    "wkeOnDownloadStart":       (None, [ctypes.c_int, DOWNLOAD_START_CB, ctypes.c_void_p]),
+    "wkeOnDownloadProgress":    (None, [ctypes.c_int, DOWNLOAD_PROGRESS_CB, ctypes.c_void_p]),
+    "wkeOnDownloadFinish":      (None, [ctypes.c_int, DOWNLOAD_FINISH_CB, ctypes.c_void_p]),
+    "wkeOnLoadUrlBegin":        (None, [ctypes.c_int, LOAD_URL_BEGIN_CB, ctypes.c_void_p]),
+    "wkeSetDownloadDir":        (None, [ctypes.c_int, ctypes.c_char_p]),
     # ---- 输入转发 -----------------------------------------------------------
     "wkeFireWindowsMessage":    (ctypes.c_int, [ctypes.c_int, wintypes.HWND, wintypes.UINT,
                                                 _WPARAM, _LPARAM, ctypes.c_void_p]),
@@ -619,12 +641,6 @@ def _candidates(dll_path=None):
         out.append(("插件目录", os.path.join(here, MBK_DLL_NAME)))
     except Exception:
         pass
-    for env_name in ("TEMP", "TMP"):
-        tmp = os.environ.get(env_name)
-        if tmp:
-            out.append(("%" + env_name + "%\\ElangMbKit",
-                        os.path.join(tmp, "ElangMbKit", MBK_DLL_NAME)))
-            break
     out.append(("系统搜索顺序", MBK_DLL_NAME))
     return out
 
@@ -703,6 +719,21 @@ def _decode(b):
         except UnicodeDecodeError:
             continue
     return b.decode("latin-1")
+
+
+def _read_gbk(addr):
+    """读内核给的 ANSI(GBK) 窄字符串（下载回调的 URL / 文件名 / 路径都是这种）
+
+    addr 可能是地址（c_void_p），也可能是 ctypes 按 c_char_p 已经转好的 bytes。
+    """
+    if not addr:
+        return ""
+    try:
+        if isinstance(addr, bytes):
+            return addr.decode("gbk", "replace")
+        return ctypes.string_at(int(addr)).decode("gbk", "replace")
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------- MbKit 单例
@@ -1920,6 +1951,164 @@ class WebView(object):
             self._cbs["url_changed"] = c
             self._mb.fn("wkeOnURLChanged2")(self._view, c, None)
         return func
+
+    # ------------------------------------------------------------ 下载 / 导航拦截
+
+    def on_download(self, func):
+        """事件_正在下载。回调参数：url；返回 False = 取消本次下载，True/None = 放行
+
+            wv.on_download(lambda url: not url.endswith(".exe"))
+
+        ★ 必须**注册**本事件（且回调不返回 False），set_download_dir() 才会生效（内核
+          先查 wkeOnDownload 有没有注册，没注册就直接走 Edge 默认下载）：返回 True 最稳妥，
+          返回 None 同样按「放行」处理，返回 False 则取消本次下载、目录也不生效。
+          传 None = 取消登记（thunk 仍在，按默认「放行」处理）。
+        """
+        self._require_alive("注册下载事件")
+        self._warn_offthread("on_download()")
+        reg = self._mb.fn("wkeOnDownload")
+        self._hook("download", func)
+        _retire(self._cbs.pop("download", None))     # 重复注册：旧 thunk 入墓地
+        def _cb(view, param, url):
+            if is_unloading() or not self._alive:
+                return 1
+            fn = self._hooks.get("download")
+            if fn is None:
+                return 1
+            try:
+                r = fn(_read_gbk(url) if url else "")
+            except Exception:
+                return 1
+            if r is None:
+                return 1
+            return 1 if r else 0
+        c = DOWNLOAD_CB(_cb)
+        self._cbs["download"] = c
+        reg(self._view, c, None)
+        return func
+
+    def on_download_start(self, func):
+        """事件_下载开始。回调参数：(url, 建议文件名, 总字节)；返回 True = 业务接管
+
+        接管后内核会取消自己那份下载，并且不再发进度/完成事件；返回 False/None = 不接管。
+        总字节未知或 > 2GB 时为 0；建议文件名为空时由内核从 URL 推。
+        """
+        self._require_alive("注册下载事件")
+        self._warn_offthread("on_download_start()")
+        reg = self._mb.fn("wkeOnDownloadStart")
+        self._hook("download_start", func)
+        _retire(self._cbs.pop("download_start", None))
+        def _cb(view, param, url, name, total):
+            if is_unloading() or not self._alive:
+                return 0
+            fn = self._hooks.get("download_start")
+            if fn is None:
+                return 0
+            try:
+                r = fn(_read_gbk(url) if url else "",
+                       _read_gbk(name) if name else "",
+                       int(total))
+            except Exception:
+                return 0
+            if r is None:
+                return 0
+            return 1 if r else 0
+        c = DOWNLOAD_START_CB(_cb)
+        self._cbs["download_start"] = c
+        reg(self._view, c, None)
+        return func
+
+    def on_download_progress(self, func):
+        """下载进度。回调参数：(已下载字节, 总字节, 百分比)
+
+        总字节为 0 时百分比是 -1；每 300ms 有新字节才发一次，收尾前补一帧 100%。
+        """
+        self._require_alive("注册下载事件")
+        self._warn_offthread("on_download_progress()")
+        reg = self._mb.fn("wkeOnDownloadProgress")
+        self._hook("download_progress", func)
+        _retire(self._cbs.pop("download_progress", None))
+        def _cb(view, param, recv, total, pct):
+            self._fire("download_progress", int(recv), int(total), int(pct))
+        c = DOWNLOAD_PROGRESS_CB(_cb)
+        self._cbs["download_progress"] = c
+        reg(self._view, c, None)
+        return func
+
+    def on_download_finish(self, func):
+        """下载完成。回调参数：(文件路径, 结果码)；结果码 0 = 成功，非 0 = 失败/中断
+
+        只在真正落盘收尾时发一次；取消 / 业务接管路径不发。
+        """
+        self._require_alive("注册下载事件")
+        self._warn_offthread("on_download_finish()")
+        reg = self._mb.fn("wkeOnDownloadFinish")
+        self._hook("download_finish", func)
+        _retire(self._cbs.pop("download_finish", None))
+        def _cb(view, param, path, result):
+            self._fire("download_finish",
+                       _read_gbk(path) if path else "", int(result))
+        c = DOWNLOAD_FINISH_CB(_cb)
+        self._cbs["download_finish"] = c
+        reg(self._view, c, None)
+        return func
+
+    def on_load_url_begin(self, func):
+        """事件_开始载入URL（发「即将导航」之前）。回调参数：url；返回 False = 取消本次导航
+
+            wv.on_load_url_begin(lambda url: "ads" not in url)
+
+        返回 True/None = 放行。第 4 参 job 恒 0（WebView2 无对应物，别拿它调 wkeNetSetData）。
+        """
+        self._require_alive("注册事件")
+        self._warn_offthread("on_load_url_begin()")
+        reg = self._mb.fn("wkeOnLoadUrlBegin")
+        self._hook("load_url_begin", func)
+        _retire(self._cbs.pop("load_url_begin", None))
+        def _cb(view, param, url, job):
+            if is_unloading() or not self._alive:
+                return 1
+            fn = self._hooks.get("load_url_begin")
+            if fn is None:
+                return 1
+            try:
+                r = fn(_read_gbk(url) if url else "")
+            except Exception:
+                return 1
+            if r is None:
+                return 1
+            return 1 if r else 0
+        c = LOAD_URL_BEGIN_CB(_cb)
+        self._cbs["load_url_begin"] = c
+        reg(self._view, c, None)
+        return func
+
+    def set_download_dir(self, path):
+        """置静默下载目录（UTF-8 路径，内核只收 GBK）；""/None = 清掉本 view 的静默
+        目录、回到 Edge 自己的下载 UI（内核不会重置 profile 里已设过的默认目录）
+
+        ★ 必须同时注册 on_download、且其回调不返回 False 才生效（内核顺序决定；
+          返回 None 也算放行）。目录不存在/不可写是内核的事：本方法只负责转码与下发，
+          这里不报错，内核建不出目录时会静默退回 Edge 默认下载。
+        """
+        self._require_alive("设置下载目录")
+        if path is None:
+            raw = b""
+        else:
+            p = os.fspath(path)
+            if isinstance(p, bytes):
+                p = p.decode("mbcs", "replace")
+            if not p:
+                raw = b""
+            else:
+                full = os.path.abspath(p)
+                try:
+                    raw = full.encode("gbk")
+                except UnicodeEncodeError:
+                    raise MbKitError(
+                        "下载目录含 GBK 无法表示的字符（内核只收 ANSI 路径）：%r" % (full,))
+        self._mb.fn("wkeSetDownloadDir")(self._view, raw)
+        return True
 
     # ------------------------------------------------------------ 杂项属性
 

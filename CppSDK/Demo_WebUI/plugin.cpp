@@ -26,7 +26,9 @@
 //      承载窗口的创建线程上调用，本例即宿主调用 RotbotAppEnable 的线程）；
 //   2. LoadHtml 载入本地页面 + JsBindFunction 注册网页可调用的原生函数；
 //   3. 四类事件回调（文档就绪 / 控制台 / 载入完成 / 标题改变）；
-//   4. ★ 热重载契约：AppUninstall 里的标准卸载顺序——
+//   4. 下载拦截示例：下载进度写到标题+日志、OnDownload 放行、静默落盘目录
+//      （SetDownloadDir 必须配合 OnDownload 返回 true 才生效）；
+//   5. ★ 热重载契约：AppUninstall 里的标准卸载顺序——
 //      先停一切会碰窗口的定时器/线程 → Destroy 视图 → 最后 DetachAll。
 // ============================================================================
 
@@ -145,6 +147,79 @@ static void OnTitleChanged(const xlz::wke::XlzWebView::TitleChangedEvent& ev)
 }
 
 // ---------------------------------------------------------------------------
+// 下载拦截 / 静默下载（可选；这 6 个 API 只在 2026-10-20 版内核上存在）
+//
+//   内核实际顺序：OnDownloadStart（接管）→ OnDownload（放行/取消）→ 落盘
+//                 → OnDownloadProgress → OnDownloadFinish
+//   ★ 两个事件的返回方向相反：
+//     OnDownload       返回 false = 取消本次下载（默认真 = 放行）
+//     OnDownloadStart  返回 true  = 业务接管（默认假 = 不接管，此后无进度/完成）
+// ---------------------------------------------------------------------------
+static std::string PluginDownloadDir()
+{
+	// 本插件 DLL 同目录下的 downloads\（不硬编码盘符；内核要 UTF-8 路径）
+	static const char kModuleTag = 0; // 只为定位「本 DLL」的模块句柄
+	HMODULE hmod = nullptr;
+	::GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		&kModuleTag, &hmod);
+
+	char path[MAX_PATH] = { 0 };
+	if (::GetModuleFileNameA(hmod, path, MAX_PATH) == 0)
+	{
+		return std::string();
+	}
+	std::string dir(path);
+	const size_t slash = dir.find_last_of("\\/");
+	dir = (slash == std::string::npos) ? std::string() : dir.substr(0, slash + 1);
+	dir += "downloads\\";
+	::CreateDirectoryA(dir.c_str(), nullptr); // 已存在会失败，忽略即可
+	return dir;
+}
+
+static void OnDownloadProgress(const xlz::wke::XlzWebView::DownloadProgressEvent& ev)
+{
+	if (g_uninstalling.load() || !g_webuiActive.load()) return;
+
+	// 1) 写日志：大小未知（TotalBytes=0）时 Percent 为 -1；>2GB 的字节数饱和成 2147483647（只报上界）
+	const std::string log = "webui download progress " + std::to_string(ev.ReceivedBytes) + "/" +
+		std::to_string(ev.TotalBytes) + " (" + std::to_string(ev.Percent) + "%)";
+	xlz::OutputLog(g_sdk, log.c_str());
+
+	// 2) 顺带把进度写到承载窗口标题（回调在宿主 UI 线程上，直接改标题是安全的）
+	if (g_webHostWnd != nullptr)
+	{
+		// 标题文本用 ASCII：源码是 UTF-8，工程靠 /utf-8 编译选项才不会被当成 GBK
+		std::wstring title = L"XiaoLiZi WebUI Demo - Download ";
+		if (ev.Percent < 0)
+		{
+			title += L"(unknown size)";
+		}
+		else
+		{
+			title += std::to_wstring(ev.Percent) + L"%";
+		}
+		::SetWindowTextW(g_webHostWnd, title.c_str());
+	}
+}
+
+static void OnDownloadFinish(const xlz::wke::XlzWebView::DownloadFinishEvent& ev)
+{
+	if (g_uninstalling.load()) return;
+	// Result == 0 才是成功；取消 / 业务接管路径不会进到这里
+	const std::string log = "webui download finish result=" + std::to_string(ev.Result) +
+		" path=" + ev.FilePathUtf8;
+	xlz::OutputLog(g_sdk, log.c_str());
+}
+
+static bool OnDownload(const xlz::wke::XlzWebView::DownloadEvent& ev)
+{
+	if (g_uninstalling.load()) return false; // 卸载中一律取消
+	xlz::OutputLog(g_sdk, ("webui download: " + ev.UrlUtf8).c_str());
+	// 本示例统一放行（true）；要按 URL 拦截就返回 false
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // 启用回调：建窗口 → 绑定 → 载页面（全部在当前线程 = 宿主调用线程）
 // ---------------------------------------------------------------------------
 static bool StartWebUi()
@@ -194,6 +269,26 @@ static bool StartWebUi()
 	g_webView.OnConsole(OnConsoleMsg);
 	g_webView.OnLoadingFinish(OnLoadingFinish);
 	g_webView.OnTitleChanged(OnTitleChanged);
+
+	// 4.1) 下载拦截（可选；这些导出只在 2026-10-20 版内核上有，旧内核注册返回 MissingSymbol）
+	g_webView.OnDownload(OnDownload);                 // false = 取消本次下载，本例统一放行
+	g_webView.OnDownloadProgress(OnDownloadProgress); // 进度：写日志 + 改窗口标题
+	g_webView.OnDownloadFinish(OnDownloadFinish);     // 终态只发一次，Result == 0 成功
+
+	// 4.2) 静默落盘：★ 必须同时注册 OnDownload 且返回 true，SetDownloadDir 才生效
+	//      （内核先查 wkeOnDownload 是否注册，没注册就直接走 Edge 默认下载 UI）。
+	//      目录用「本插件 DLL 同目录\downloads\」，不要硬编码绝对路径。
+	const std::string downloadDir = PluginDownloadDir();
+	if (!downloadDir.empty())
+	{
+		const xlz::wke::WebUiError dirErr = g_webView.SetDownloadDir(downloadDir.c_str());
+		if (dirErr != xlz::wke::WebUiError::Ok)
+		{
+			// 多半是 MissingSymbol（内核太旧），也可能是目录不可写
+			const std::string err = "webui SetDownloadDir failed, err=" + std::to_string(static_cast<int>(dirErr));
+			xlz::OutputLog(g_sdk, err.c_str());
+		}
+	}
 	g_webView.JsBindFunction("__xlzNative", XlzNativeFunction, 1);
 
 	// 5) 等内核就绪（演示用；宿主 UI 线程里等是有消息泵的，安全）

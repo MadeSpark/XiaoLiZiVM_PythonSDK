@@ -70,6 +70,8 @@ def main(argv) -> int:
         line = line.strip()
         if not line or line.startswith(";") or line.startswith("LIBRARY"):
             continue
+        if line.upper() == "EXPORTS":  # .def 的关键字行，不是导出名
+            continue
         # gen_fwd.def 每行形如 "  MbKit_Init" 或 "  wkeLoadURLW @123"
         name = line.split()[0]
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
