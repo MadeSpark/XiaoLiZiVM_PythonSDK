@@ -51,7 +51,8 @@ namespace wke
 		HostDllNotFound = -100, // MbKit146.dll 不存在且无可用内核 blob（本层）
 		HostDllLoadFailed = -101, // MbKit146.dll 存在但 LoadLibrary 失败（本层）
 		ViewNotBound = -102,   // view 尚未创建（本层）
-		NotOnOwnerThread = -103 // Bind 不在承载窗口创建线程上（本层，按需使用）
+		NotOnOwnerThread = -103, // Bind 不在承载窗口创建线程上（本层，按需使用）
+		HostDllMismatch = -104   // 进程里已载入的 MbKit146.dll 与本插件提供的内核不是同一份（本层）
 	};
 
 	// 内核模式（MbKit_KernelMode）
@@ -83,13 +84,14 @@ namespace wke
 	// MbKitLib —— MbKit146.dll 加载单例（复刻易模块 _确保宿主库已载入）
 	//
 	// 查找顺序：
-	//   0) SetKernelBlob() 提供的内存映像（调用方自带内核字节；不落地文件，
-	//      直接 LoadLibrary 到进程后按基名命中规则生效）；
-	//      或者 SetKernelSourceDir() 指定的旁路目录（例如 SDK 目录旁）。
-	//   1) 宿主 exe 目录 \MbKit146.dll
-	//   2) 裸名 MbKit146.dll（系统搜索序，含「已被进程载入」的命中）
-	// 内核只由框架释放到运行时/exe 目录；收养闸要求进程内已载入副本与内置内核逐字节相同。
-	// 已被进程按基名载入过时直接复用（Windows 按基名命中，先载入的那份生效）。
+	//   0) 进程里已经载入的 MbKit146.dll（宿主或别的插件先载入的）——先查它，再碰磁盘。
+	//      只按内容判定能否共用、不看路径：提供了 SetKernelBlob()/SetKernelSourceDir() 时，
+	//      已载入那份必须与之逐字节相同，否则返回 HostDllMismatch；都没提供就直接共用。
+	//      共用时自己再 LoadLibrary 一次（引用计数 +1），先载入的一方卸载也带不走内核。
+	//   1) 进程里还没有内核时：SetKernelSourceDir() 旁路目录 → 宿主 exe 目录 \MbKit146.dll。
+	//      提供了 blob 时会把它释放到该目录（内容不一致就覆盖，写完复核），覆盖不了就明确失败。
+	// 与易语言 miniblink 模块（2026-10-30 版）的 _确保宿主库已载入 同一套规则，
+	// 所以宿主、易语言插件、C++/Python 插件可以在同一进程里共用同一份内核。
 	// 载入后校验 MbKit_Version() 版本串：不含 "MbKit/1.4.5" 时记入告警文本，
 	// 由 SelfDiag()/VersionWarning() 输出（版本钉住 + 多份告警机制）。
 	// ---------------------------------------------------------------------------

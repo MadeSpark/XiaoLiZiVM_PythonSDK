@@ -376,6 +376,8 @@ wv.load_html("<button onclick='alert(pyEcho(1))'>试</button>")
 
 - 内核 DLL **不在本包里**：放到框架目录或插件目录即可被找到（框架只把内核释放到运行时/exe 目录，不再使用临时目录），
   也可以用环境变量 `XLZ_MBKIT_DLL` 或 `WebView(dll_path=...)` 明确指定。
+- 进程里已有内核（框架或别的插件先载入）时直接共用那一份，只比内容不比路径；你指定的文件内容不同会抛
+  `MbKitVersionMismatchError`。
 - 找不到只影响 webui：构造时抛 `MbKitNotFoundError` 并列出搜索过的路径，**不会**拖垮插件。
 - 版本要求 `MbKit/1.4.5`。注意 `MbKit_Version()` 在**内核启动之前返回空串**，所以版本校验
   发生在第一次 `bind()`（启动内核）之后，启动前判不了 —— 别在 `apprun` 里断言版本。

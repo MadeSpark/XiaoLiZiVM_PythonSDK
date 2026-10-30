@@ -232,6 +232,7 @@ struct MbKitLib::Impl
 	std::string loadedPath;            // 实际使用的 DLL 全路径（UTF-8）
 	std::string lastLoadError;         // 最近一次失败详情
 	bool loadAttempted = false;        // 是否已经试过一次（失败结果也要缓存，避免反复碰磁盘）
+	WebUiError lastError = WebUiError::HostDllNotFound; // 失败时缓存的错误码
 	std::mutex procMutex;              // GetProc 缓存表锁
 	std::string procCacheNames[64];    // 简单定长缓存（名字）
 	void* procCacheAddrs[64] = {};     // 与上者一一对应
@@ -258,7 +259,7 @@ static std::wstring g_kernelSourceDir;      // 旁路目录（含 MbKit146.dll �
 
 bool MbKitLib::SetKernelBlob(const void* blobBytes, uint32_t blobLength)
 {
-	// 提供内核 blob：必须是完整的 MbKit146.dll 文件映像（763,904 B，MbKit/1.4.5）
+	// 提供内核 blob：必须是完整的 MbKit146.dll 文件映像（2026-10-30 版 771,584 B，版本串 MbKit/1.4.5）
 	if (blobBytes == nullptr || blobLength < 1024)
 	{
 		return false;
@@ -277,6 +278,10 @@ void MbKitLib::SetKernelSourceDir(const char* dirUtf8)
 static bool FileMatchesBytes(const std::wstring& path, const void* bytes, uint32_t length)
 {
 	// 逐字节内容比对（不能只比大小：历史事故=同尺寸旧 DLL 覆盖新内核导致 WebView2 永不初始化）
+	if (path.empty() || bytes == nullptr || length == 0)
+	{
+		return false;
+	}
 	HANDLE f = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (f == INVALID_HANDLE_VALUE)
@@ -311,9 +316,35 @@ static bool FileMatchesBytes(const std::wstring& path, const void* bytes, uint32
 	return same;
 }
 
+static bool ReadWholeFile(const std::wstring& path, std::vector<unsigned char>& out)
+{
+	// 整文件读入（只用于和已载入内核做内容比对；内核约 770 KB）
+	out.clear();
+	HANDLE f = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (f == INVALID_HANDLE_VALUE)
+	{
+		return false;
+	}
+	const DWORD size = ::GetFileSize(f, nullptr);
+	bool ok = (size != INVALID_FILE_SIZE && size > 0);
+	if (ok)
+	{
+		out.resize(size);
+		DWORD done = 0;
+		ok = ::ReadFile(f, out.data(), size, &done, nullptr) && done == size;
+	}
+	::CloseHandle(f);
+	if (!ok)
+	{
+		out.clear();
+	}
+	return ok;
+}
+
 static bool WriteBlobToFile(const std::wstring& path, const void* bytes, uint32_t length)
 {
-	// 把内核 blob 整文件写出（写失败但文件已存在时由调用方决定是否继续用旧文件）
+	// 把内核 blob 整文件写出
 	HANDLE f = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (f == INVALID_HANDLE_VALUE)
 	{
@@ -335,49 +366,108 @@ static void SetHidden(const std::wstring& path)
 	}
 }
 
-static std::wstring TryDirForHostLib(const std::wstring& dir)
+static std::wstring DllPathInDir(const std::wstring& dir)
 {
-	// 在目录里定位/释放 MbKit146.dll：返回可用的完整路径，失败返回空串。
-	// 逻辑复刻易模块 _尝试从目录取宿主库 + _释放宿主库文件。
+	// 目录 + "\MbKit146.dll"；目录为空返回空串
 	if (dir.empty())
 	{
 		return std::wstring();
 	}
 	std::wstring path = dir;
-	if (!path.empty() && path[path.size() - 1] != L'\\')
+	if (path[path.size() - 1] != L'\\' && path[path.size() - 1] != L'/')
 	{
 		path += L'\\';
 	}
 	path += L"MbKit146.dll";
+	return path;
+}
+
+static std::wstring ModulePath(HMODULE module)
+{
+	// 由 HMODULE 取完整路径；失败返回空串
+	wchar_t buf[1024] = {};
+	const DWORD cap = static_cast<DWORD>(sizeof(buf) / sizeof(buf[0]));
+	const DWORD n = ::GetModuleFileNameW(module, buf, cap);
+	if (n == 0 || n >= cap)
+	{
+		return std::wstring();
+	}
+	return std::wstring(buf, n);
+}
+
+static std::wstring TryDirForHostLib(const std::wstring& dir, std::ostringstream& tried)
+{
+	// 在目录里定位/释放 MbKit146.dll：返回可用的完整路径，失败返回空串（原因追加到 tried）。
+	// 逻辑复刻易模块 _尝试从目录取宿主库 + _释放宿主库文件；只在进程里还没有内核时才会走到这里。
+	const std::wstring path = DllPathInDir(dir);
+	if (path.empty())
+	{
+		return std::wstring();
+	}
+	const bool exists = ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
 
 	if (g_kernelBlobBytes != nullptr && g_kernelBlobLength > 0)
 	{
-		// 有 blob：内容比对，不一致或不存在 → 整文件写出；
-		// 写失败但文件存在（宿主已锁旧版）→ 继续用已载入那份，不让绑定整段失败。
-		bool ok = FileMatchesBytes(path, g_kernelBlobBytes, g_kernelBlobLength);
-		if (!ok)
+		// 有 blob：内容比对，不一致或不存在 → 整文件写出，写完必须复核。
+		// 写不进去（被别的进程占用 / 只读）就明确失败，绝不拿旧文件继续跑——
+		// 旧内核会在按槽位绑定的调用上直接崩掉整个进程。
+		if (!FileMatchesBytes(path, g_kernelBlobBytes, g_kernelBlobLength))
 		{
-			ok = WriteBlobToFile(path, g_kernelBlobBytes, g_kernelBlobLength);
-		}
-		if (!ok && ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES)
-		{
-			ok = true; // 宿主 exe 可能已先载入并锁住旧 DLL：文件在就继续
-		}
-		if (!ok)
-		{
-			return std::wstring();
+			if (exists)
+			{
+				const DWORD attr = ::GetFileAttributesW(path.c_str());
+				if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY) != 0)
+				{
+					::SetFileAttributesW(path.c_str(), attr & ~static_cast<DWORD>(FILE_ATTRIBUTE_READONLY));
+				}
+			}
+			if (!WriteBlobToFile(path, g_kernelBlobBytes, g_kernelBlobLength)
+				|| !FileMatchesBytes(path, g_kernelBlobBytes, g_kernelBlobLength))
+			{
+				tried << "  " << WideToUtf8(path.c_str())
+					<< (exists ? " : differs from the kernel blob and cannot be replaced (in use / read-only / no write permission)\n"
+					           : " : cannot write the kernel blob here\n");
+				return std::wstring();
+			}
 		}
 		SetHidden(path);
+		return path;
 	}
-	else
+
+	// 无 blob：只要求文件存在（找不到时返回空，由调用方走下一个候选位）
+	if (!exists)
 	{
-		// 无 blob：只要求文件存在（找不到时返回空，由调用方走下一个候选位）
-		if (::GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES)
-		{
-			return std::wstring();
-		}
+		tried << "  " << WideToUtf8(path.c_str()) << " : not found\n";
+		return std::wstring();
 	}
 	return path;
+}
+
+static std::string CheckAdoptable(const std::wstring& loadedPath)
+{
+	// 进程里已有 MbKit146.dll 时判断能不能共用：只看内容，不看路径
+	// （宿主 exe 目录与插件目录可以不同；先载入的那份才是全进程唯一生效的内核）。
+	// 比对基准 = 本插件自己提供的内核（SetKernelBlob / SetKernelSourceDir）；没提供就没有基准，直接共用。
+	// 返回空串 = 可以共用；否则返回不一致的原因（UTF-8）。
+	if (g_kernelBlobBytes != nullptr && g_kernelBlobLength > 0)
+	{
+		if (!FileMatchesBytes(loadedPath, g_kernelBlobBytes, g_kernelBlobLength))
+		{
+			return "it is not byte-identical to the kernel blob given to SetKernelBlob()";
+		}
+		return std::string();
+	}
+	if (!g_kernelSourceDir.empty())
+	{
+		const std::wstring mine = DllPathInDir(g_kernelSourceDir);
+		std::vector<unsigned char> bytes;
+		if (::GetFileAttributesW(mine.c_str()) != INVALID_FILE_ATTRIBUTES && ReadWholeFile(mine, bytes)
+			&& !FileMatchesBytes(loadedPath, bytes.data(), static_cast<uint32_t>(bytes.size())))
+		{
+			return "it is not byte-identical to " + WideToUtf8(mine.c_str()) + " (SetKernelSourceDir)";
+		}
+	}
+	return std::string();
 }
 
 WebUiError MbKitLib::EnsureLoaded()
@@ -391,66 +481,78 @@ WebUiError MbKitLib::EnsureLoaded()
 	}
 	if (impl.loadAttempted)
 	{
-		// 已失败过一次：直接返回上次结果（避免每次公开命令都碰磁盘）
-		return WebUiError::HostDllNotFound;
+		// 已失败过一次：直接返回上次的错误码（避免每次公开命令都碰磁盘）
+		return impl.lastError;
 	}
 
-	// 候选路径顺序（复刻易模块 _取宿主库文件路径 + 本层扩展）：
 	std::wstring chosen;
 
-	// 0a) 旁路目录（SetKernelSourceDir 指定，例如 SDK 目录旁）
-	if (!g_kernelSourceDir.empty())
+	// 0) 先查进程里已载入的那一份（与易模块同序）。
+	//    宿主和插件各自带一份内核时，先启动的一方已经把它载入进程；已载入的文件被映射锁住，
+	//    后来者若先去释放/覆盖只会失败。所以必须先查已载入的，再决定要不要碰磁盘。
+	HMODULE already = ::GetModuleHandleW(L"MbKit146.dll");
+	if (already != nullptr)
 	{
-		chosen = TryDirForHostLib(g_kernelSourceDir);
-	}
-	// 0b) 宿主 exe 目录 \MbKit146.dll
-	if (chosen.empty())
-	{
-		wchar_t exeDir[MAX_PATH] = {};
-		if (::GetModuleFileNameW(nullptr, exeDir, MAX_PATH) > 0)
-		{
-			wchar_t* slash = std::wcsrchr(exeDir, L'\\');
-			if (slash != nullptr)
-			{
-				*slash = L'\0';
-				chosen = TryDirForHostLib(exeDir);
-			}
-		}
-	}
-	// 1) 裸名（系统搜索序；Windows 按基名命中已载入模块，先载入的那份生效）
-	if (chosen.empty())
-	{
-		HMODULE already = ::GetModuleHandleW(L"MbKit146.dll");
-		if (already != nullptr)
-		{
-			// 进程里已有一份（别的插件/宿主先载入的）：直接复用，不重复加载
-			impl.module = already;
-			chosen = L"(already loaded by base name)";
-		}
-		else
+		const std::wstring loadedPath = ModulePath(already);
+		const std::string why = CheckAdoptable(loadedPath);
+		if (!why.empty())
 		{
 			impl.loadAttempted = true;
-			impl.lastLoadError = "MbKit146.dll not found (kernel source dir / host exe dir / search path); "
-				"provide it via SetKernelBlob()/SetKernelSourceDir() or deploy it next to the host exe";
-			return WebUiError::HostDllNotFound;
+			impl.lastError = WebUiError::HostDllMismatch;
+			impl.lastLoadError = "MbKit146.dll already loaded in this process (" + WideToUtf8(loadedPath.c_str())
+				+ ") is a different build: " + why + ". Only one kernel can live in a process; rebuild the host "
+				"and every plugin with the same kernel, then restart the host.";
+			return impl.lastError;
 		}
+		// 自己再引用一次：避免先载入的一方卸载时把内核从进程里带走
+		HMODULE ref = loadedPath.empty() ? nullptr : ::LoadLibraryW(loadedPath.c_str());
+		impl.module = (ref != nullptr) ? ref : already;
+		chosen = loadedPath.empty() ? std::wstring(L"(already loaded by base name)") : loadedPath;
 	}
-
-	if (impl.module == nullptr)
+	else
 	{
-		// LoadLibrary（Windows 按基名命中：路径不同但已载入时会复用同一份）
+		std::ostringstream tried;
+		// 1a) 旁路目录（SetKernelSourceDir 指定，例如插件包自带内核的目录）
+		if (!g_kernelSourceDir.empty())
+		{
+			chosen = TryDirForHostLib(g_kernelSourceDir, tried);
+		}
+		// 1b) 宿主 exe 目录 \MbKit146.dll
+		if (chosen.empty())
+		{
+			wchar_t exeDir[MAX_PATH] = {};
+			if (::GetModuleFileNameW(nullptr, exeDir, MAX_PATH) > 0)
+			{
+				wchar_t* slash = std::wcsrchr(exeDir, L'\\');
+				if (slash != nullptr)
+				{
+					*slash = L'\0';
+					chosen = TryDirForHostLib(exeDir, tried);
+				}
+			}
+		}
+		if (chosen.empty())
+		{
+			impl.loadAttempted = true;
+			impl.lastError = WebUiError::HostDllNotFound;
+			impl.lastLoadError = "MbKit146.dll not usable; provide it via SetKernelBlob()/SetKernelSourceDir() "
+				"or deploy it next to the host exe. Tried:\n" + tried.str();
+			return impl.lastError;
+		}
 		impl.module = ::LoadLibraryW(chosen.c_str());
 		if (impl.module == nullptr)
 		{
 			impl.loadAttempted = true;
+			impl.lastError = WebUiError::HostDllLoadFailed;
 			std::ostringstream oss;
 			oss << "LoadLibraryW failed, GetLastError=" << ::GetLastError() << ", path=" << WideToUtf8(chosen.c_str());
 			impl.lastLoadError = oss.str();
-			return WebUiError::HostDllLoadFailed;
+			return impl.lastError;
 		}
 	}
 
 	impl.loadedPath = WideToUtf8(chosen.c_str());
+	impl.lastLoadError.clear();
 
 	// 版本串校验（版本钉住 + 多份告警）：不含 "MbKit/1.4.5" 记入告警
 	impl.versionWarning.clear();
@@ -463,7 +565,8 @@ WebUiError MbKitLib::EnsureLoaded()
 		{
 			// MbKit_Version 返回 ANSI 文本
 			impl.loadedVersion = AnsiToUtf8(ver);
-			if (std::strstr(ver, "MbKit/1.4.5") == nullptr)
+			// 内核启动前 MbKit_Version() 返回空串：那时判不了版本，不告警
+			if (ver[0] != '\0' && std::strstr(ver, "MbKit/1.4.5") == nullptr)
 			{
 				impl.versionWarning = "Warning: another MbKit146.dll is loaded in this process, version string is \""
 					+ impl.loadedVersion + "\" while this SDK expects MbKit/1.4.5. "

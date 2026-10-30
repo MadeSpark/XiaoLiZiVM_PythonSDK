@@ -200,8 +200,8 @@ wv.load_html("<h1>hello</h1>")                  # 或 load_url("https://...") / 
 其他要点：
 
 - `MbKit146.dll` **不随插件打包**，需与插件 DLL 一起部署到插件目录或宿主 exe 目录；也可用环境变量
-  `XLZ_MBKIT_DLL` 或 `WebView(dll_path=...)` 明确指定。框架只把内核释放到运行时/exe 目录，且进程里已载入的
-  `MbKit146.dll` 必须与框架内置内核逐字节相同，否则拒绝加载；找不到会抛 `MbKitNotFoundError` 并列出搜索路径，不会崩插件。
+  `XLZ_MBKIT_DLL` 或 `WebView(dll_path=...)` 明确指定。框架只把内核释放到运行时/exe 目录；进程里已有内核时
+  `xlz_webui` 直接共用那一份（只比内容、不比路径），你指定的文件内容不同才抛 `MbKitVersionMismatchError`；找不到会抛 `MbKitNotFoundError` 并列出搜索路径，不会崩插件。
 - 版本要求 `MbKit/1.4.5`；`MbKit_Version()` 在**内核启动前返回空串**，版本校验发生在第一次
   启动内核之后 —— 不要在 `apprun` 里断言版本。
 - 已知限制：内核一个进程只有一份（换内核只能重启宿主）；约 5 次快速热重载仍可能让宿主崩在

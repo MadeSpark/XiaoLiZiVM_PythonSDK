@@ -349,7 +349,7 @@ void StartWebUi()
 | `SetDownloadDir(dirUtf8)` | 置下载目录（UTF-8 入参，内核内部转 GBK）；**只有同时注册 `OnDownload` 且返回 true 才生效**；传 `nullptr`/`""` = 清掉本 view 的静默目录，之后回到「Edge 自己的下载 UI」（内核**不会**重置 profile 里已设过的默认下载文件夹）；GBK 编不出的字符返回 `BadParam` |
 
 失败一律返回 `WebUiError`（`Ok`、`NoKernelDll`、`MissingSymbol`、`BadParam`、`BadState`、
-`HostDllNotFound`、`HostDllLoadFailed`、`ViewNotBound`、`NotOnOwnerThread` …），**不会空指针调内核**。
+`HostDllNotFound`、`HostDllLoadFailed`、`ViewNotBound`、`NotOnOwnerThread`、`HostDllMismatch` …），**不会空指针调内核**。
 
 ### 三条必须守住的规则
 
@@ -397,13 +397,19 @@ void StopWebUi()   // 插件卸载回调里调
 ### `MbKit146.dll` 的放置与版本
 
 - **放哪**：`<宿主 exe 目录>\MbKit146.dll`（框架/易语言模块用同一份）。SDK 的查找顺序是
-  `SetKernelBlob()` 注入的内存映像 → `SetKernelSourceDir()` 指定的旁路目录 →
-  **宿主 exe 目录** → 裸名（系统搜索序，含「已被进程载入」的命中）。
+  **进程里已载入的那一份**（宿主或别的插件先载入的）→ `SetKernelSourceDir()` 指定的旁路目录 →
+  **宿主 exe 目录**（提供了 `SetKernelBlob()` 时会把内核释放到这里）。
   找不到不崩：`EnsureLoaded()` 返回 `HostDllNotFound`，`LastLoadError()` 里列出试过的路径。
-- **框架收养闸**：框架只把内核释放到运行时/exe 目录；进程里已载入的 `MbKit146.dll` 必须与模块内置
-  内核逐字节相同，否则拒绝加载并报「进程里已有别的代码载入了 MbKit146.dll，且它不是本模块内置内核的同一份拷贝（请重启宿主，并让本插件在别的插件之前加载）」。
+- **共用规则（2026-10-30 起与易语言 miniblink 模块一致）**：进程里已经有 `MbKit146.dll` 时先查它，
+  **只按内容判定、不看路径**——宿主 exe 目录和插件目录不同也能共用。提供了 `SetKernelBlob()` /
+  `SetKernelSourceDir()` 时，已载入那份必须与之逐字节相同，否则 `EnsureLoaded()` 返回
+  `HostDllMismatch`（-104），不会再载入第二份内核；都没提供就直接共用。共用时 SDK 自己再
+  `LoadLibrary` 一次，先载入的一方卸载也带不走内核。易语言模块在同样情况下的报错是
+  「进程里已载入的 MbKit146.dll（<路径>）与本模块内置内核不是同一版本。请让宿主和所有使用本模块的插件用同一版本的 miniblink 模块重新编译，然后重启宿主」。
+  以前的版本只要进程里已有内核就拒绝（报「…它的来源与版本都不受本模块控制…」），宿主和插件各带一份时插件必然失败，现已修正。
 - **更新时按内容比对**：换内核**不能只比文件大小或时间戳**（历史事故：同尺寸的旧 DLL 覆盖了新内核，
-  导致 WebView2 永不初始化）。正确做法是逐字节比对；文件被占用写不进去时，用已载入的那份并记告警。
+  导致 WebView2 永不初始化）。正确做法是逐字节比对；释放 blob 时文件不一致又覆盖不了（被占用 / 只读），
+  `EnsureLoaded()` 明确返回失败，不会拿旧文件继续跑。
 - **版本钉住**：本 SDK 对齐 **`MbKit/1.4.5`**。载入后读 `MbKit_Version()` 校验，
   版本串不含 `MbKit/1.4.5` 时 `MbKitLib::VersionWarning()` 给出提示（`SelfDiag()` 会带在头部）——
   这通常意味着**进程里已经有一份别的内核**先载入了。

@@ -86,14 +86,17 @@ Python 插件没有「内置资源」这一说（易语言模块是把 DLL 塞�
 
 查找顺序（`find_dll()`）：
 
+    0. 进程内**已经载入**的那一份（GetModuleHandleW）—— 宿主或别的插件先载入了就直接共用它
     1. `WebView(dll_path=...)` / `MbKit(dll_path=...)` 显式指定
     2. 环境变量 `XLZ_MBKIT_DLL`
-    3. 进程内**已经载入**的那一份（GetModuleHandleW）—— 宿主或别的插件先载入了就用它
-    4. 宿主 exe 所在目录
-    5. 本文件所在目录（= 你的插件目录）
-    6. 裸名 "MbKit146.dll"（走系统 DLL 搜索顺序，含 PATH）
+    3. 宿主 exe 所在目录
+    4. 本文件所在目录（= 你的插件目录）
+    5. 裸名 "MbKit146.dll"（走系统 DLL 搜索顺序，含 PATH）
 
-第 3 条最要紧：**一个进程里只有最先载入的那份 MbKit 生效**，多份共存没有意义。
+第 0 条最要紧：**一个进程里只能有一份内核**。进程里已经有了就只按**内容**判定能否共用、
+不看路径：显式指定 / 环境变量给的那份文件存在时，必须与已载入那份逐字节相同，否则抛
+`MbKitVersionMismatchError`（不会再去载入第二份内核）；没给就直接共用。这与易语言 miniblink
+模块（2026-10-30 版）的规则一致，所以宿主、易语言插件、Python 插件可以在同一进程里共用内核。
 如果发现版本串里没有 `MbKit/1.4.5`，会 `warnings.warn` 提示「多份 DLL 版本不一致」。
 找不到 DLL 时抛 `MbKitNotFoundError`，附带全部尝试过的路径 —— 不会崩宿主。
 
@@ -157,7 +160,7 @@ MBKIT_E_PARAM = -4
 MBKIT_E_STATE = -5
 
 __all__ = [
-    "MbKitError", "MbKitNotFoundError", "MbKitThreadError",
+    "MbKitError", "MbKitNotFoundError", "MbKitVersionMismatchError", "MbKitThreadError",
     "MbKit", "WebView",
     "detach_all", "unload", "live_views", "find_dll",
     "kernel_version", "kernel_diag",
@@ -182,6 +185,10 @@ class MbKitError(RuntimeError):
 
 class MbKitNotFoundError(MbKitError):
     """找不到可用的 MbKit146.dll，或它无法被载入（位数不符/被杀软吃掉）"""
+
+
+class MbKitVersionMismatchError(MbKitNotFoundError):
+    """进程里已载入的 MbKit146.dll 与你指定的那份不是同一个文件内容（一个进程只能有一份内核）"""
 
 
 class MbKitThreadError(MbKitError):
@@ -618,21 +625,44 @@ def _module_path(hm):
     return ""
 
 
+def _loaded_module_path():
+    """进程里已载入的 MbKit146.dll 的完整路径；没载入返回 ""（取不到路径时返回裸名）"""
+    try:
+        hm = int(win32().GetModuleHandleW(MBK_DLL_NAME) or 0)
+    except Exception:
+        hm = 0
+    if not hm:
+        return ""
+    return _module_path(hm) or MBK_DLL_NAME
+
+
+def _same_file_bytes(a, b):
+    """两个文件内容逐字节相同（不能只比大小：同尺寸旧 DLL 覆盖新内核的事故出过）"""
+    try:
+        if os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b)):
+            return True
+        if os.path.getsize(a) != os.path.getsize(b):
+            return False
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            while True:
+                x = fa.read(65536)
+                y = fb.read(65536)
+                if x != y:
+                    return False
+                if not x:
+                    return True
+    except OSError:
+        return False
+
+
 def _candidates(dll_path=None):
-    """按优先级返回 [(说明, 路径)]；路径为 "" 表示走 LoadLibrary 的默认搜索"""
+    """进程里还没有内核时的候选，按优先级返回 [(说明, 路径)]"""
     out = []
     if dll_path:
         out.append(("显式指定", os.path.abspath(str(dll_path))))
     env = os.environ.get(ENV_DLL)
     if env:
         out.append(("环境变量 %s" % ENV_DLL, os.path.abspath(env)))
-    hm = 0
-    try:
-        hm = int(win32().GetModuleHandleW(MBK_DLL_NAME) or 0)
-    except Exception:
-        hm = 0
-    if hm:
-        out.append(("进程内已载入", _module_path(hm)))
     host = _host_exe_dir()
     if host:
         out.append(("宿主 exe 目录", os.path.join(host, MBK_DLL_NAME)))
@@ -646,31 +676,39 @@ def _candidates(dll_path=None):
 
 
 def find_dll(dll_path=None):
-    """找 MbKit146.dll，返回第一个真正存在的完整路径；找不到抛 MbKitNotFoundError。
+    """找 MbKit146.dll，返回要载入的完整路径；找不到抛 MbKitNotFoundError。
 
-    优先用「进程内已载入」的那一份：同一个进程里只有最先载入的 MbKit 生效。
+    进程里已经有内核时一律共用那一份（一个进程只能有一份内核）；只有当你通过
+    dll_path / 环境变量明确给了另一份文件、且内容与已载入那份不同时，才抛
+    MbKitVersionMismatchError。
     """
+    loaded = _loaded_module_path()
+    if loaded:
+        mine = []
+        if dll_path:
+            mine.append(("显式指定", os.path.abspath(str(dll_path))))
+        env = os.environ.get(ENV_DLL)
+        if env:
+            mine.append(("环境变量 %s" % ENV_DLL, os.path.abspath(env)))
+        for how, path in mine:
+            if os.path.isfile(path) and loaded != MBK_DLL_NAME and not _same_file_bytes(path, loaded):
+                raise MbKitVersionMismatchError(
+                    "进程里已载入的 %s（%s）与 [%s] %s 不是同一份内核（内容不同）。\n"
+                    "一个进程只能有一份内核：请让宿主和所有插件使用同一版本的 MbKit146.dll，然后重启宿主。"
+                    % (MBK_DLL_NAME, loaded, how, path))
+        return loaded
+
     tried = []
-    loaded = ""
-    picked = ""
     for how, path in _candidates(dll_path):
-        if how == "进程内已载入":
-            loaded = path
         if path and path != MBK_DLL_NAME and os.path.isfile(path):
             tried.append("  * [%s] %s  <-- 命中" % (how, path))
-            picked = path
-            break
+            return path
         tried.append("  . [%s] %s" % (how, path))
-
-    if not picked and loaded:
-        picked = loaded          # 已载入但取不到路径：直接按模块名再取一次
-    if not picked:
-        raise MbKitNotFoundError(
-            "没找到 %s（内核宿主库）。请把它放到插件目录里一起打包。\n"
-            "也可以用 WebView(dll_path=r'...\\%s') 或设置环境变量 %s 指定。\n"
-            "已尝试的路径：\n%s"
-            % (MBK_DLL_NAME, MBK_DLL_NAME, ENV_DLL, "\n".join(tried)))
-    return picked
+    raise MbKitNotFoundError(
+        "没找到 %s（内核宿主库）。请把它放到插件目录里一起打包。\n"
+        "也可以用 WebView(dll_path=r'...\\%s') 或设置环境变量 %s 指定。\n"
+        "已尝试的路径：\n%s"
+        % (MBK_DLL_NAME, MBK_DLL_NAME, ENV_DLL, "\n".join(tried)))
 
 
 # ---------------------------------------------------------------- 文本工具
