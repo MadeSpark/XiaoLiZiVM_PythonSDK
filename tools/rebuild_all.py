@@ -396,8 +396,11 @@ wv.load_html("<button onclick='alert(pyEcho(1))'>试</button>")
 必须是 **CPython 3.14 自由线程（`cp314t`）+ win32** 的 wheel，解到插件目录里一起打包：
 
 ```bat
-python.exe -m pip install pillow --only-binary=:all: --python-version 3.14 --platform win32 --abi cp314t --target MyPlugin
+"C:\Python314t_32\python.exe" -m pip install pillow --only-binary=:all: --python-version 3.14 --platform win32 --abi cp314t --target MyPlugin
 ```
+
+- 三个覆盖参数（`--python-version` / `--platform` / `--abi`）只看「要什么轮子」，与运行 pip 的解释器版本无关：
+  任意已装 pip 的 Python 都行，不必是 3.14t。**框架自带的 `corn\python` 不带 pip**（没有 `site-packages`、没有 `ensurepip`），不要用它装依赖。
 
 - 文件名形如 `pillow-13.0.0-cp314-cp314t-win32.whl`；GIL 版 `cp314-cp314-win32` 不能加载，
   `abi3` 也不行（`abi3t` 在 3.14.8t 下未验证，不要依赖）。

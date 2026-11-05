@@ -333,6 +333,15 @@ def on_enable() -> int:
 
 `--abi cp314t` 是关键：不加它，pip 可能选中 GIL 版的 `cp314-cp314-win32` 轮子，装进去也无法 import。
 
+实测（pip 26.1，同上参数）：`pillow` → `pillow-13.0.0-cp314-cp314t-win32.whl`、`numpy` / `cryptography` → `cp314-cp314t-win32`、
+`requests` → `py3-none-any`；去掉 `--abi cp314t` 后 `pillow` 会落到 `cp314-cp314-win32`、`cryptography` 会落到 `cp311-abi3-win32`，
+这两个轮子在 3.14.8t 下都加载不了。
+
+> **pip 从哪来**：上面三个参数是「目标覆盖」，只看你要什么轮子，跟运行 pip 的解释器版本无关，任意已装 pip 的 Python 都行
+> （本机用 CPython 3.12 + pip 26.1 实测同样能挑到 `cp314-cp314t-win32`）。**框架自带的 `corn\python` 不带 pip**
+> （没有 `site-packages`、没有 `ensurepip`），不要拿它装依赖。
+> `--target` 会在插件目录留下 `*.dist-info`（几 KB 元数据，打完包可以删）；`__pycache__` / `*.pyc` 会被 `pack_payload.py` 自动排除。
+
 或者直接从 [PyPI](https://pypi.org/) 下载文件名带 `cp314-cp314t-win32` 的 wheel
 （例如 `pillow-13.0.0-cp314-cp314t-win32.whl`）手动解压到插件目录。
 
