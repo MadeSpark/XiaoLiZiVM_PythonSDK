@@ -128,7 +128,6 @@ def on_event_message(ev: dict) -> int:
   --target MyPlugin/
 ```
 
-
 注意：`--python-version` / `--platform` / `--abi` 是目标覆盖参数，与运行 pip 的解释器无关——任意已装 pip 的 Python 都行（不必是 3.14t）；
 **框架自带的 `corn\python` 不带 pip**（没有 `site-packages`、没有 `ensurepip`），不要用它装依赖。
 wheel 解压后残留的 `*.dist-info` 可以删；`__pycache__` / `*.pyc` 打包时会被自动排除。
